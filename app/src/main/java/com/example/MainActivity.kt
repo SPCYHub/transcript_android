@@ -1,0 +1,376 @@
+package com.example
+
+import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.KeyboardVoice
+import androidx.compose.material.icons.outlined.GraphicEq
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.KeyboardVoice
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.core.AppContainer
+import com.example.core.configureAppCheck
+import com.example.model.AudioSourceType
+import com.example.ui.components.studioGridBackground
+import com.example.ui.screens.KeyboardScreen
+import com.example.ui.screens.SessionScreen
+import com.example.ui.screens.StudioScreen
+import com.example.ui.theme.CantoScribeTheme
+import com.example.viewmodel.StudioViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
+
+enum class AppDestination(
+    val route: String,
+    val label: String,
+    val selectedIcon: ImageVector,
+    val unselectedIcon: ImageVector
+) {
+    STUDIO("studio", "Studio", Icons.Filled.GraphicEq, Icons.Outlined.GraphicEq),
+    KEYBOARD("keyboard", "Keyboard", Icons.Filled.KeyboardVoice, Icons.Outlined.KeyboardVoice),
+    SESSION("session", "Session", Icons.Filled.History, Icons.Outlined.History)
+}
+
+class MainActivity : ComponentActivity() {
+
+    private val incomingSharedAudioUri = MutableStateFlow<Uri?>(null)
+    private val openKeyboardTabFlag = MutableStateFlow(false)
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // STEP 1: Configure Firebase App Check with launch intent BEFORE UI, ViewModels, or Firebase calls.
+        configureAppCheck(this, intent)
+
+        // STEP 2: Initialize lightweight shared AppContainer.
+        AppContainer.ensureInitialized(applicationContext)
+
+        // STEP 3: Extract any shared WhatsApp/audio intent delivered at launch.
+        extractIncomingIntent(intent)
+
+        enableEdgeToEdge()
+        setContent {
+            CantoScribeTheme {
+                val pendingUri by incomingSharedAudioUri.collectAsStateWithLifecycle()
+                val shouldOpenKeyboard by openKeyboardTabFlag.collectAsStateWithLifecycle()
+                CantoScribeRoot(
+                    pendingSharedUri = pendingUri,
+                    onConsumeSharedUri = { incomingSharedAudioUri.value = null },
+                    shouldOpenKeyboardTab = shouldOpenKeyboard,
+                    onConsumeOpenKeyboardTab = { openKeyboardTabFlag.value = false }
+                )
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        extractIncomingIntent(intent)
+    }
+
+    private fun extractIncomingIntent(intent: Intent?) {
+        if (intent == null) return
+
+        if (intent.getBooleanExtra("request_mic_from_ime", false)) {
+            openKeyboardTabFlag.value = true
+        }
+
+        val uri: Uri? = when (intent.action) {
+            Intent.ACTION_SEND -> getParcelableUri(intent, Intent.EXTRA_STREAM)
+            Intent.ACTION_SEND_MULTIPLE -> getParcelableUriList(intent, Intent.EXTRA_STREAM)?.firstOrNull()
+            Intent.ACTION_VIEW -> intent.data
+            else -> null
+        }
+
+        if (uri != null) {
+            incomingSharedAudioUri.value = uri
+        }
+    }
+
+    private fun getParcelableUri(intent: Intent, key: String): Uri? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(key, Uri::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(key)
+        }
+    }
+
+    private fun getParcelableUriList(intent: Intent, key: String): ArrayList<Uri>? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableArrayListExtra(key, Uri::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableArrayListExtra(key)
+        }
+    }
+}
+
+@Composable
+private fun CantoScribeRoot(
+    pendingSharedUri: Uri?,
+    onConsumeSharedUri: () -> Unit,
+    shouldOpenKeyboardTab: Boolean,
+    onConsumeOpenKeyboardTab: () -> Unit,
+    viewModel: StudioViewModel = viewModel()
+) {
+    val context = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val preferences by viewModel.preferences.collectAsStateWithLifecycle()
+    val displayFormat by viewModel.displayFormat.collectAsStateWithLifecycle()
+    val sessionRecords by viewModel.sessionRecords.collectAsStateWithLifecycle()
+    val sandboxState by viewModel.sandboxState.collectAsStateWithLifecycle()
+    val snackbarMessage by viewModel.snackbarMessage.collectAsStateWithLifecycle()
+
+    var currentDestination by remember { mutableStateOf(AppDestination.STUDIO) }
+    var hasMicPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasMicPermission = granted
+        if (!granted) {
+            viewModel.postToast("Microphone access is required for live Cantonese voice capture.")
+        }
+    }
+
+    // Zero-permission Storage Access Framework picker for audio files (.opus, .ogg, .m4a, .mp3, .wav)
+    val audioPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            currentDestination = AppDestination.STUDIO
+            viewModel.handleSharedAudioUri(uri, AudioSourceType.AUDIO_IMPORT)
+        }
+    }
+
+    LaunchedEffect(pendingSharedUri) {
+        if (pendingSharedUri != null) {
+            currentDestination = AppDestination.STUDIO
+            viewModel.handleSharedAudioUri(pendingSharedUri, AudioSourceType.WHATSAPP_SHARE)
+            onConsumeSharedUri()
+        }
+    }
+
+    LaunchedEffect(shouldOpenKeyboardTab) {
+        if (shouldOpenKeyboardTab) {
+            currentDestination = AppDestination.KEYBOARD
+            if (!hasMicPermission) {
+                micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+            onConsumeOpenKeyboardTab()
+        }
+    }
+
+    LaunchedEffect(snackbarMessage) {
+        if (!snackbarMessage.isNullOrBlank()) {
+            snackbarHostState.showSnackbar(snackbarMessage!!)
+            viewModel.consumeSnackbar()
+        }
+    }
+
+    // Handle back navigation on secondary tabs cleanly to return to Studio.
+    BackHandler(enabled = currentDestination != AppDestination.STUDIO) {
+        currentDestination = AppDestination.STUDIO
+    }
+
+    val copyToClipboard: (String) -> Unit = { text ->
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        clipboard?.setPrimaryClip(ClipData.newPlainText("CantoScribe Transcript", text))
+        viewModel.postToast("Copied to clipboard")
+    }
+
+    val shareText: (String) -> Unit = { text ->
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, text)
+        }
+        context.startActivity(Intent.createChooser(shareIntent, "Share Cantonese Transcript"))
+    }
+
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .studioGridBackground(
+                dotColor = MaterialTheme.colorScheme.outline,
+                glowColor = MaterialTheme.colorScheme.primary
+            )
+    ) {
+        val useNavRail = maxWidth >= 680.dp
+
+        Scaffold(
+            containerColor = androidx.compose.ui.graphics.Color.Transparent,
+            contentWindowInsets = WindowInsets.safeDrawing,
+            snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
+            bottomBar = {
+                if (!useNavRail) {
+                    NavigationBar(
+                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                        tonalElevation = 2.dp
+                    ) {
+                        AppDestination.entries.forEach { dest ->
+                            val selected = currentDestination == dest
+                            NavigationBarItem(
+                                selected = selected,
+                                onClick = { currentDestination = dest },
+                                icon = {
+                                    Icon(
+                                        imageVector = if (selected) dest.selectedIcon else dest.unselectedIcon,
+                                        contentDescription = dest.label
+                                    )
+                                },
+                                label = {
+                                    val labelText = if (dest == AppDestination.SESSION && sessionRecords.isNotEmpty()) {
+                                        "${dest.label} (${sessionRecords.size})"
+                                    } else {
+                                        dest.label
+                                    }
+                                    Text(labelText)
+                                },
+                                modifier = Modifier.testTag("nav_${dest.route}")
+                            )
+                        }
+                    }
+                }
+            }
+        ) { innerPadding ->
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+            ) {
+                if (useNavRail) {
+                    NavigationRail(
+                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)
+                    ) {
+                        AppDestination.entries.forEach { dest ->
+                            val selected = currentDestination == dest
+                            NavigationRailItem(
+                                selected = selected,
+                                onClick = { currentDestination = dest },
+                                icon = {
+                                    Icon(
+                                        imageVector = if (selected) dest.selectedIcon else dest.unselectedIcon,
+                                        contentDescription = dest.label
+                                    )
+                                },
+                                label = { Text(dest.label) },
+                                modifier = Modifier.testTag("rail_${dest.route}")
+                            )
+                        }
+                    }
+                }
+
+                Box(modifier = Modifier.weight(1f)) {
+                    when (currentDestination) {
+                        AppDestination.STUDIO -> StudioScreen(
+                            uiState = uiState,
+                            preferences = preferences,
+                            displayFormat = displayFormat,
+                            isOpenAiConfigured = viewModel.isOpenAiConfigured,
+                            hasMicPermission = hasMicPermission,
+                            onRequestMicPermission = {
+                                micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            },
+                            onSelectRoutingMode = viewModel::setRoutingMode,
+                            onStartRecording = viewModel::startStudioRecording,
+                            onStopRecording = viewModel::stopStudioRecordingAndTranscribe,
+                            onCancelRecording = viewModel::cancelStudioRecording,
+                            onImportAudio = {
+                                audioPickerLauncher.launch(arrayOf("audio/*", "application/ogg"))
+                            },
+                            onSelectFormat = viewModel::selectDisplayFormat,
+                            onCopyText = copyToClipboard,
+                            onShareText = shareText,
+                            onRunDeepReview = viewModel::runDeepReviewOnCurrent,
+                            onRetry = viewModel::retryLastAudio
+                        )
+
+                        AppDestination.KEYBOARD -> KeyboardScreen(
+                            sandboxState = sandboxState,
+                            preferences = preferences,
+                            hasMicPermission = hasMicPermission,
+                            onRequestMicPermission = {
+                                micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            },
+                            onToggleSandboxRecord = viewModel::toggleSandboxRecording,
+                            onSandboxTextChange = viewModel::updateSandboxText,
+                            onAppendSymbol = viewModel::appendSandboxSymbol,
+                            onUndoSandbox = viewModel::undoSandboxLastDictation,
+                            onClearSandbox = viewModel::clearSandbox,
+                            onCopySandbox = copyToClipboard,
+                            onSaveGlossary = viewModel::setCustomGlossary
+                        )
+
+                        AppDestination.SESSION -> SessionScreen(
+                            records = sessionRecords,
+                            onOpenRecord = { record ->
+                                viewModel.openSessionRecord(record)
+                                currentDestination = AppDestination.STUDIO
+                            },
+                            onCopyText = copyToClipboard,
+                            onDeleteRecord = viewModel::removeSessionRecord,
+                            onClearAll = viewModel::clearAllSessionHistory
+                        )
+                    }
+                }
+            }
+        }
+    }
+}

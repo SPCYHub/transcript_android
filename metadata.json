@@ -1,0 +1,6 @@
+{
+  "name": "CantoScribe",
+  "description": "Cantonese-first Android transcription studio with WhatsApp voice message sharing, live voice keyboard (IME), and smart Gemini + OpenAI auto-routing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

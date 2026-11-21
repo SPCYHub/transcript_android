@@ -1,0 +1,48 @@
+<resources>
+    <string name="app_name">CantoScribe</string>
+    <string name="ime_service_label">CantoScribe Voice</string>
+    <string name="ime_subtype_cantonese_hk">Cantonese (HK Voice)</string>
+
+    <!-- Navigation -->
+    <string name="nav_studio">Studio</string>
+    <string name="nav_keyboard">Keyboard</string>
+    <string name="nav_session">Session</string>
+
+    <!-- Studio -->
+    <string name="studio_subtitle">CANTONESE TRANSCRIPTION STUDIO</string>
+    <string name="action_record_start">Tap to Record Cantonese</string>
+    <string name="action_record_stop">Tap to Stop &amp; Transcribe</string>
+    <string name="action_import_audio">Import Audio</string>
+    <string name="action_copy">Copy</string>
+    <string name="action_share">Share</string>
+    <string name="action_deep_review">Deep Review</string>
+    <string name="action_retry">Retry</string>
+    <string name="action_clear_session">Clear Session</string>
+
+    <!-- Formats -->
+    <string name="format_spoken">口語 Spoken</string>
+    <string name="format_written">書面語 Written</string>
+    <string name="format_dual">Dual View</string>
+
+    <!-- Routing modes -->
+    <string name="routing_auto">Auto</string>
+    <string name="routing_gemini">Gemini</string>
+    <string name="routing_openai">OpenAI</string>
+
+    <!-- Keyboard -->
+    <string name="keyboard_title">Live Voice Keyboard</string>
+    <string name="keyboard_step_enable">1. Enable CantoScribe Voice</string>
+    <string name="keyboard_step_switch">2. Switch Active Keyboard</string>
+    <string name="keyboard_sandbox_title">Live Dictation Sandbox</string>
+    <string name="keyboard_sandbox_hint">Tap the mic below to test live Cantonese voice typing directly into this composer…</string>
+
+    <!-- Session -->
+    <string name="session_title">Session History</string>
+    <string name="session_ephemeral_notice">In-memory only · Auto-clears when app closes</string>
+    <string name="session_empty_title">No transcripts this session</string>
+    <string name="session_empty_body">Record a voice memo, import an audio file, or share a WhatsApp voice message to CantoScribe.</string>
+
+    <!-- Permissions -->
+    <string name="permission_mic_required">Microphone permission is required for live Cantonese voice recording.</string>
+    <string name="permission_mic_grant">Grant Mic Access</string>
+</resources>
