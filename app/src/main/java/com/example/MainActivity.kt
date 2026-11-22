@@ -26,13 +26,16 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.KeyboardVoice
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.KeyboardVoice
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarDefaults
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
@@ -47,6 +50,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -60,6 +64,7 @@ import com.example.model.AudioSourceType
 import com.example.ui.components.studioGridBackground
 import com.example.ui.screens.KeyboardScreen
 import com.example.ui.screens.SessionScreen
+import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.StudioScreen
 import com.example.ui.theme.CantoScribeTheme
 import com.example.viewmodel.StudioViewModel
@@ -73,7 +78,8 @@ enum class AppDestination(
 ) {
     STUDIO("studio", "Studio", Icons.Filled.GraphicEq, Icons.Outlined.GraphicEq),
     KEYBOARD("keyboard", "Keyboard", Icons.Filled.KeyboardVoice, Icons.Outlined.KeyboardVoice),
-    SESSION("session", "Session", Icons.Filled.History, Icons.Outlined.History)
+    SESSION("session", "Session", Icons.Filled.History, Icons.Outlined.History),
+    KEYS("keys", "Keys", Icons.Filled.Key, Icons.Outlined.Key)
 }
 
 class MainActivity : ComponentActivity() {
@@ -92,19 +98,24 @@ class MainActivity : ComponentActivity() {
         // STEP 1: Configure Firebase App Check with launch intent BEFORE UI, ViewModels, or Firebase calls.
         configureAppCheck(this, intent)
 
-        // STEP 2: Initialize lightweight shared AppContainer.
+        // STEP 2: Initialize shared AppContainer.
         AppContainer.ensureInitialized(applicationContext)
 
-        // STEP 3: Extract any shared WhatsApp/audio or Quick Tile intent delivered at launch.
+        // STEP 3: Extract incoming WhatsApp/audio share or Quick Settings Tile intent.
         extractIncomingIntent(intent)
 
         enableEdgeToEdge()
         setContent {
-            CantoScribeTheme {
+            val viewModel: StudioViewModel = viewModel()
+            val preferences by viewModel.preferences.collectAsStateWithLifecycle()
+
+            CantoScribeTheme(themePreference = preferences.themePreference) {
                 val pendingUri by incomingSharedAudioUri.collectAsStateWithLifecycle()
                 val shouldOpenKeyboard by openKeyboardTabFlag.collectAsStateWithLifecycle()
                 val shouldAutoStartLive by autoStartLiveFlag.collectAsStateWithLifecycle()
+
                 CantoScribeRoot(
+                    viewModel = viewModel,
                     pendingSharedUri = pendingUri,
                     onConsumeSharedUri = { incomingSharedAudioUri.value = null },
                     shouldOpenKeyboardTab = shouldOpenKeyboard,
@@ -165,19 +176,22 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun CantoScribeRoot(
+    viewModel: StudioViewModel,
     pendingSharedUri: Uri?,
     onConsumeSharedUri: () -> Unit,
     shouldOpenKeyboardTab: Boolean,
     onConsumeOpenKeyboardTab: () -> Unit,
     shouldAutoStartLive: Boolean,
-    onConsumeAutoStartLive: () -> Unit,
-    viewModel: StudioViewModel = viewModel()
+    onConsumeAutoStartLive: () -> Unit
 ) {
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
 
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val preferences by viewModel.preferences.collectAsStateWithLifecycle()
+    val apiKeyStatus by viewModel.apiKeyStatus.collectAsStateWithLifecycle()
+    val geminiKeyTest by viewModel.geminiKeyTest.collectAsStateWithLifecycle()
+    val openAiKeyTest by viewModel.openAiKeyTest.collectAsStateWithLifecycle()
     val displayFormat by viewModel.displayFormat.collectAsStateWithLifecycle()
     val sessionRecords by viewModel.sessionRecords.collectAsStateWithLifecycle()
     val sandboxState by viewModel.sandboxState.collectAsStateWithLifecycle()
@@ -203,7 +217,6 @@ private fun CantoScribeRoot(
         }
     }
 
-    // Zero-permission Storage Access Framework picker for audio files (.opus, .ogg, .m4a, .mp3, .wav)
     val audioPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -263,7 +276,6 @@ private fun CantoScribeRoot(
         }
     }
 
-    // Handle back navigation on secondary tabs cleanly to return to Studio.
     BackHandler(enabled = currentDestination != AppDestination.STUDIO) {
         currentDestination = AppDestination.STUDIO
     }
@@ -282,20 +294,22 @@ private fun CantoScribeRoot(
             .background(MaterialTheme.colorScheme.background)
             .studioGridBackground(
                 dotColor = MaterialTheme.colorScheme.outline,
-                glowColor = MaterialTheme.colorScheme.primary
+                primaryGlow = MaterialTheme.colorScheme.primary,
+                tertiaryGlow = MaterialTheme.colorScheme.tertiary
             )
     ) {
         val useNavRail = maxWidth >= 680.dp
 
         Scaffold(
-            containerColor = androidx.compose.ui.graphics.Color.Transparent,
+            containerColor = Color.Transparent,
             contentWindowInsets = WindowInsets.safeDrawing,
             snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
             bottomBar = {
                 if (!useNavRail) {
                     NavigationBar(
                         containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-                        tonalElevation = 2.dp
+                        tonalElevation = 2.dp,
+                        windowInsets = NavigationBarDefaults.windowInsets
                     ) {
                         AppDestination.entries.forEach { dest ->
                             val selected = currentDestination == dest
@@ -330,7 +344,7 @@ private fun CantoScribeRoot(
             ) {
                 if (useNavRail) {
                     NavigationRail(
-                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)
+                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)
                     ) {
                         AppDestination.entries.forEach { dest ->
                             val selected = currentDestination == dest
@@ -356,7 +370,7 @@ private fun CantoScribeRoot(
                             uiState = uiState,
                             preferences = preferences,
                             displayFormat = displayFormat,
-                            isOpenAiConfigured = viewModel.isOpenAiConfigured,
+                            apiKeyStatus = apiKeyStatus,
                             hasMicPermission = hasMicPermission,
                             onRequestMicPermission = {
                                 micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -370,6 +384,8 @@ private fun CantoScribeRoot(
                             onImportAudio = {
                                 audioPickerLauncher.launch(arrayOf("audio/*", "application/ogg"))
                             },
+                            onOpenKeyboardTab = { currentDestination = AppDestination.KEYBOARD },
+                            onOpenKeysTab = { currentDestination = AppDestination.KEYS },
                             onSelectFormat = viewModel::selectDisplayFormat,
                             onCopyText = { copyToClipboard(it, "Copied to clipboard") },
                             onShareText = shareText,
@@ -391,8 +407,7 @@ private fun CantoScribeRoot(
                             onAppendSymbol = viewModel::appendSandboxSymbol,
                             onUndoSandbox = viewModel::undoSandboxLastDictation,
                             onClearSandbox = viewModel::clearSandbox,
-                            onCopySandbox = { copyToClipboard(it, "Copied sandbox text") },
-                            onSaveGlossary = viewModel::setCustomGlossary
+                            onCopySandbox = { copyToClipboard(it, "Copied sandbox text") }
                         )
 
                         AppDestination.SESSION -> SessionScreen(
@@ -404,6 +419,25 @@ private fun CantoScribeRoot(
                             onCopyText = { copyToClipboard(it, "Copied to clipboard") },
                             onDeleteRecord = viewModel::removeSessionRecord,
                             onClearAll = viewModel::clearAllSessionHistory
+                        )
+
+                        AppDestination.KEYS -> SettingsScreen(
+                            apiKeyStatus = apiKeyStatus,
+                            geminiKeyTest = geminiKeyTest,
+                            openAiKeyTest = openAiKeyTest,
+                            preferences = preferences,
+                            onSaveGeminiKey = viewModel::saveGeminiApiKey,
+                            onClearGeminiKey = viewModel::clearGeminiApiKey,
+                            onToggleUsePersonalGemini = viewModel::setUsePersonalGeminiKey,
+                            onSaveCustomGeminiModel = viewModel::saveCustomGeminiModel,
+                            onTestGeminiKey = viewModel::testGeminiKey,
+                            onSaveOpenAiKey = viewModel::saveOpenAiApiKey,
+                            onClearOpenAiKey = viewModel::clearOpenAiApiKey,
+                            onTestOpenAiKey = viewModel::testOpenAiKey,
+                            onSelectTheme = viewModel::setThemePreference,
+                            onToggleAutoCopy = viewModel::setAutoCopyOnFinish,
+                            onToggleIncludeWritten = viewModel::setIncludeWrittenInAuto,
+                            onSaveGlossary = viewModel::setCustomGlossary
                         )
                     }
                 }

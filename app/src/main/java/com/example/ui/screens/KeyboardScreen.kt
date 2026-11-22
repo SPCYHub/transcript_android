@@ -35,7 +35,6 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.DeleteSweep
-import androidx.compose.material.icons.outlined.Translate
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -84,7 +83,6 @@ fun KeyboardScreen(
     onUndoSandbox: () -> Unit,
     onClearSandbox: () -> Unit,
     onCopySandbox: (String) -> Unit,
-    onSaveGlossary: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -92,9 +90,6 @@ fun KeyboardScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
 
     var isImeEnabled by remember { mutableStateOf(checkImeEnabled(context)) }
-    var glossaryDraft by remember(preferences.customGlossary) {
-        mutableStateOf(preferences.customGlossary)
-    }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -121,25 +116,25 @@ fun KeyboardScreen(
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
-                    text = "LIVE VOICE IME + SANDBOX",
+                    text = "SYSTEM VOICE KEYBOARD",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "Live Cantonese Keyboard",
+                    text = "Cantonese Voice IME",
                     style = MaterialTheme.typography.headlineMedium,
                     color = MaterialTheme.colorScheme.onBackground
                 )
             }
 
-            // System Voice Keyboard Setup Card
+            // Compact 2-step system keyboard activation card
             Surface(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(22.dp),
+                shape = RoundedCornerShape(24.dp),
                 color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 2.dp,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+                tonalElevation = 1.dp,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
                 Column(
                     modifier = Modifier.padding(18.dp),
@@ -160,7 +155,7 @@ fun KeyboardScreen(
                                 tint = MaterialTheme.colorScheme.primary
                             )
                             Text(
-                                text = "System-Wide Live Keyboard",
+                                text = "Type in Any App",
                                 style = MaterialTheme.typography.titleMedium
                             )
                         }
@@ -170,11 +165,11 @@ fun KeyboardScreen(
                             color = if (isImeEnabled) {
                                 MaterialTheme.colorScheme.primaryContainer
                             } else {
-                                MaterialTheme.colorScheme.surfaceVariant
+                                MaterialTheme.colorScheme.surfaceContainer
                             }
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
@@ -200,7 +195,7 @@ fun KeyboardScreen(
                     }
 
                     Text(
-                        text = "Words type themselves live into WhatsApp, Notes, or Chrome while you speak — Hold to Speak for fast replies or Quick Tap for hands-free Cantonese dictation.",
+                        text = "Dictate live Hong Kong Cantonese directly inside WhatsApp, Notes, or Chrome.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -254,13 +249,13 @@ fun KeyboardScreen(
                 }
             }
 
-            // Real-Time Live Dictation Sandbox
+            // Interactive Live Dictation Sandbox
             Surface(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(22.dp),
+                shape = RoundedCornerShape(24.dp),
                 color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 2.dp,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+                tonalElevation = 1.dp,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
                 Column(
                     modifier = Modifier.padding(18.dp),
@@ -272,22 +267,32 @@ fun KeyboardScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Live Keyboard Sandbox",
+                            text = "Live Dictation Sandbox",
                             style = MaterialTheme.typography.titleMedium
                         )
-                        Text(
-                            text = if (sandboxState.isStreaming) {
-                                "LIVE · ${formatDurationMs(sandboxState.elapsedMillis)}"
-                            } else {
-                                preferences.routingMode.label
-                            },
-                            style = MaterialTheme.typography.labelMedium,
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
                             color = if (sandboxState.isStreaming) {
-                                MaterialTheme.colorScheme.error
+                                MaterialTheme.colorScheme.errorContainer
                             } else {
-                                MaterialTheme.colorScheme.primary
+                                MaterialTheme.colorScheme.surfaceContainer
                             }
-                        )
+                        ) {
+                            Text(
+                                text = if (sandboxState.isStreaming) {
+                                    "LIVE · ${formatDurationMs(sandboxState.elapsedMillis)}"
+                                } else {
+                                    preferences.routingMode.label
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (sandboxState.isStreaming) {
+                                    MaterialTheme.colorScheme.onErrorContainer
+                                } else {
+                                    MaterialTheme.colorScheme.primary
+                                },
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
                     }
 
                     OutlinedTextField(
@@ -295,15 +300,15 @@ fun KeyboardScreen(
                         onValueChange = onSandboxTextChange,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(128.dp)
+                            .height(132.dp)
                             .testTag("keyboard_sandbox_input"),
                         placeholder = {
                             Text(
-                                text = "Hold or tap the jade mic below — Cantonese streams live right here while you talk…",
+                                text = "Hold or tap the mic below — Cantonese streams live right here…",
                                 style = MaterialTheme.typography.bodyMedium
                             )
                         },
-                        shape = RoundedCornerShape(14.dp)
+                        shape = RoundedCornerShape(16.dp)
                     )
 
                     if (sandboxState.livePartial.isNotBlank()) {
@@ -322,7 +327,6 @@ fun KeyboardScreen(
                         }
                     }
 
-                    // Cantonese quick punctuation strip
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -331,7 +335,8 @@ fun KeyboardScreen(
                         listOf("，", "。", "？", "！", "、", "啦", "㗎", "唔該").forEachIndexed { idx, token ->
                             Surface(
                                 shape = RoundedCornerShape(10.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                color = MaterialTheme.colorScheme.surfaceContainer,
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                                 modifier = Modifier
                                     .minimumInteractiveComponentSize()
                                     .clip(RoundedCornerShape(10.dp))
@@ -365,11 +370,11 @@ fun KeyboardScreen(
                                 .fillMaxWidth()
                                 .height(54.dp)
                                 .testTag("sandbox_mic_button"),
-                            shape = RoundedCornerShape(14.dp)
+                            shape = RoundedCornerShape(16.dp)
                         ) {
-                            Icon(Icons.Filled.Mic, contentDescription = "Grant mic")
+                            Icon(Icons.Filled.Mic, contentDescription = "Grant microphone access")
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Grant Mic for Live Dictation")
+                            Text("Allow Microphone for Live Dictation")
                         }
                     } else {
                         val isStreaming = sandboxState.isStreaming
@@ -378,13 +383,17 @@ fun KeyboardScreen(
                         } else {
                             MaterialTheme.colorScheme.primary
                         }
-                        val padFg = MaterialTheme.colorScheme.onPrimary
+                        val padFg = if (isStreaming) {
+                            MaterialTheme.colorScheme.onError
+                        } else {
+                            MaterialTheme.colorScheme.onPrimary
+                        }
 
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(56.dp)
-                                .clip(RoundedCornerShape(14.dp))
+                                .height(58.dp)
+                                .clip(RoundedCornerShape(16.dp))
                                 .background(padBg)
                                 .pointerInput(isStreaming) {
                                     detectTapGestures(
@@ -430,7 +439,7 @@ fun KeyboardScreen(
                                     text = when {
                                         isStreaming && sandboxState.isHoldToTalk -> "Live Streaming · Release When Done"
                                         isStreaming -> "Hands-Free Live · Tap to Stop"
-                                        else -> "Hold to Speak · Tap for Hands-Free"
+                                        else -> "Hold to Speak · Tap Hands-Free"
                                     },
                                     style = MaterialTheme.typography.titleSmall,
                                     color = padFg,
@@ -495,59 +504,6 @@ fun KeyboardScreen(
                             Spacer(modifier = Modifier.width(4.dp))
                             Text("Clear")
                         }
-                    }
-                }
-            }
-
-            // Custom HK Cantonese Glossary Priming
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(22.dp),
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
-            ) {
-                Column(
-                    modifier = Modifier.padding(18.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Translate,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            text = "Cantonese Vocabulary Hints",
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                    }
-                    Text(
-                        text = "Boost accuracy for names, Hong Kong places, or work jargon across both Gemini and OpenAI live engines.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    OutlinedTextField(
-                        value = glossaryDraft,
-                        onValueChange = { glossaryDraft = it },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("glossary_input"),
-                        singleLine = true,
-                        placeholder = { Text("e.g. 將軍澳, K11, Jira, Standup, 埋單") },
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                    Button(
-                        onClick = { onSaveGlossary(glossaryDraft) },
-                        modifier = Modifier
-                            .align(Alignment.End)
-                            .minimumInteractiveComponentSize()
-                            .testTag("save_glossary_button"),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Text("Save Glossary")
                     }
                 }
             }

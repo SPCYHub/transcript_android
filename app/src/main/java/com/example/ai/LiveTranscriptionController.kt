@@ -3,6 +3,7 @@ package com.example.ai
 import android.util.Log
 import com.example.audio.LivePcmStreamRecorder
 import com.example.audio.PcmAudioChunk
+import com.example.data.SecureKeyStore
 import com.example.data.SessionTranscriptStore
 import com.example.model.AudioCaptureMetrics
 import com.example.model.AudioSourceType
@@ -36,6 +37,7 @@ import java.nio.ByteOrder
 import java.security.MessageDigest
 
 private const val TAG = "LiveTranscriptionCtrl"
+private const val DEFAULT_LIVE_GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 data class LiveStreamState(
     val isActive: Boolean = false,
@@ -66,18 +68,14 @@ private fun needsSpaceBetween(prev: Char, next: Char): Boolean {
 }
 
 /**
- * Real-time streaming transcription controller that transcribes Cantonese LIVE while the user
- * speaks — never waiting until recording finishes to start sending audio.
- *
- * Dual-engine real-time architecture:
- * - **OpenAI Realtime WebSocket (`gpt-live-transcribe`)**: Streams raw 24 kHz PCM16 over WebSocket
- *   with server VAD and incremental `.delta` / `.completed` events when OpenAI is active.
- * - **Gemini Live VAD Streaming (`gemini-3.5-flash-lite` `generateContentStream`)**: Uses continuous
- *   16 kHz PCM16 capture + client-side VAD pause & rolling window segmentation (550ms silence or
- *   2.8s continuous speech) to stream live in-memory WAV slices and render tokens in real time
- *   while the user keeps speaking — with seamless automatic failover from OpenAI if needed.
+ * Real-time streaming transcription controller supporting:
+ * - OpenAI Realtime WebSocket (`gpt-live-transcribe`) when OpenAI key is configured.
+ * - Gemini Live VAD Streaming via either the user's personal Gemini API key (Direct SSE)
+ *   or built-in Firebase AI Logic (`Firebase.ai`).
  */
 class LiveTranscriptionController(
+    private val keyStore: SecureKeyStore,
+    private val directGeminiRest: DirectGeminiRestClient,
     private val openAiRealtime: OpenAiRealtimeStreamEngine,
     private val sessionStore: SessionTranscriptStore
 ) {
@@ -85,7 +83,7 @@ class LiveTranscriptionController(
     companion object {
         private const val GEMINI_VAD_PAUSE_MS = 550L
         private const val GEMINI_MAX_WINDOW_MS = 2_800L
-        private const val GEMINI_MIN_SEGMENT_BYTES = 16_000 * 2 * 350 / 1000 // 350ms PCM16
+        private const val GEMINI_MIN_SEGMENT_BYTES = 16_000 * 2 * 350 / 1000
         private const val STREAM_CHUNK_TIMEOUT_MS = 30_000L
     }
 
@@ -93,7 +91,7 @@ class LiveTranscriptionController(
 
     private val geminiLiveModel by lazy {
         Firebase.ai.generativeModel(
-            modelName = "gemini-3.5-flash-lite",
+            modelName = DEFAULT_LIVE_GEMINI_MODEL,
             generationConfig = generationConfig {
                 temperature = 0.1f
             }
@@ -113,14 +111,12 @@ class LiveTranscriptionController(
     private var activeSourceType = AudioSourceType.STUDIO_RECORD
     private var sessionStartedAtMs = 0L
 
-    // Rolling speech segment buffer for Gemini Live VAD streaming (zero disk writes).
     private val segmentBufferLock = Any()
     private val segmentPcmBuffer = ByteArrayOutputStream(64 * 1024)
     private var segmentHasSpeech = false
     private var segmentStartedAtMs = 0L
     private var lastSpeechSeenAtMs = 0L
 
-    // Callback invoked on every live delta / committed phrase (used by CantoVoiceImeService).
     private var onLiveSegmentCommit: ((String) -> Unit)? = null
     private var onLivePartialUpdate: ((String) -> Unit)? = null
 
@@ -147,7 +143,7 @@ class LiveTranscriptionController(
         }
 
         if (wantOpenAiRealtime && !openAiRealtime.isConfigured) {
-            val msg = "OpenAI API key is not configured in AI Studio Secrets. Switch to Auto or Gemini for live streaming."
+            val msg = "OpenAI API key is not configured. Add your key in the Keys tab, or switch to Auto / Gemini."
             _state.value = LiveStreamState(errorMessage = msg)
             return Result.failure(IllegalStateException(msg))
         }
@@ -159,10 +155,6 @@ class LiveTranscriptionController(
         }
     }
 
-    /**
-     * Stops microphone capture, flushes any remaining spoken words (<2s tail),
-     * and returns the finalized [TranscriptRecord] immediately.
-     */
     suspend fun stopAndFinalize(saveToSession: Boolean = true): TranscriptRecord? {
         val wasActive = _state.value.isActive
         if (!wasActive) return null
@@ -173,7 +165,6 @@ class LiveTranscriptionController(
 
         if (usingOpenAiRealtime) {
             openAiRealtime.commitBuffer()
-            // Brief grace window for the final WebSocket delta to arrive.
             delay(350L)
             openAiRealtime.disconnect()
         } else {
@@ -283,7 +274,6 @@ class LiveTranscriptionController(
                 }
 
                 override fun onError(message: String) {
-                    // Seamless Auto-mode failover straight into Gemini Live VAD streaming!
                     if (preferences.routingMode == RoutingMode.AUTO && _state.value.isActive) {
                         Log.w(TAG, "OpenAI Realtime error ($message); failing over live to Gemini VAD streaming")
                         val existingConfirmed = _state.value.combinedText
@@ -329,13 +319,14 @@ class LiveTranscriptionController(
             lastSpeechSeenAtMs = 0L
         }
 
+        val usingDirectKey = keyStore.resolveDirectGeminiKey() != null
         _state.value = LiveStreamState(
             isActive = true,
             isConnecting = false,
             confirmedText = carryOverText,
             partialText = "",
-            engineLabel = "Gemini Live · 3.5 Lite Stream",
-            engineId = TranscriptionEngineId.GEMINI_FLASH_LITE
+            engineLabel = if (usingDirectKey) "Gemini Direct · Personal Key" else "Gemini Live · Firebase AI",
+            engineId = if (usingDirectKey) TranscriptionEngineId.GEMINI_DIRECT_LITE else TranscriptionEngineId.GEMINI_FLASH_LITE
         )
 
         val queue = Channel<ByteArray>(capacity = Channel.UNLIMITED)
@@ -375,7 +366,6 @@ class LiveTranscriptionController(
                 lastSpeechSeenAtMs = chunk.timestampMs
                 segmentPcmBuffer.write(chunk.pcmBytes)
             } else if (segmentHasSpeech) {
-                // Keep natural trailing silence inside the phrase for clean word endings.
                 segmentPcmBuffer.write(chunk.pcmBytes)
             }
 
@@ -431,22 +421,46 @@ class LiveTranscriptionController(
         }
 
         val segmentBuilder = StringBuilder()
+        val directKey = keyStore.resolveDirectGeminiKey()
+
         try {
             withTimeout(STREAM_CHUNK_TIMEOUT_MS) {
-                geminiLiveModel.generateContentStream(
-                    content("user") {
-                        inlineData(wavBytes, "audio/wav")
-                        text(prompt)
+                if (directKey != null) {
+                    val modelName = keyStore.resolveCustomGeminiModel() ?: DEFAULT_LIVE_GEMINI_MODEL
+                    directGeminiRest.streamAudioSegment(
+                        apiKey = directKey,
+                        modelName = modelName,
+                        promptText = prompt,
+                        audioBytes = wavBytes,
+                        audioMimeType = "audio/wav"
+                    ).collect { piece ->
+                        if (piece.isNotEmpty()) {
+                            segmentBuilder.append(piece)
+                            val cleanPartial = segmentBuilder.toString().trim()
+                            if (cleanPartial.isNotEmpty()) {
+                                _state.update { it.copy(partialText = cleanPartial, errorMessage = null) }
+                                withContext(Dispatchers.Main.immediate) {
+                                    onLivePartialUpdate?.invoke(cleanPartial)
+                                }
+                            }
+                        }
                     }
-                ).collect { chunk ->
-                    val piece = chunk.text.orEmpty()
-                    if (piece.isNotEmpty()) {
-                        segmentBuilder.append(piece)
-                        val cleanPartial = segmentBuilder.toString().trim()
-                        if (cleanPartial.isNotEmpty()) {
-                            _state.update { it.copy(partialText = cleanPartial, errorMessage = null) }
-                            withContext(Dispatchers.Main.immediate) {
-                                onLivePartialUpdate?.invoke(cleanPartial)
+                } else {
+                    geminiLiveModel.generateContentStream(
+                        content("user") {
+                            inlineData(wavBytes, "audio/wav")
+                            text(prompt)
+                        }
+                    ).collect { chunk ->
+                        val piece = chunk.text.orEmpty()
+                        if (piece.isNotEmpty()) {
+                            segmentBuilder.append(piece)
+                            val cleanPartial = segmentBuilder.toString().trim()
+                            if (cleanPartial.isNotEmpty()) {
+                                _state.update { it.copy(partialText = cleanPartial, errorMessage = null) }
+                                withContext(Dispatchers.Main.immediate) {
+                                    onLivePartialUpdate?.invoke(cleanPartial)
+                                }
                             }
                         }
                     }
@@ -477,10 +491,16 @@ class LiveTranscriptionController(
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Gemini live chunk failed", e)
+            val errMsg = e.localizedMessage ?: "Live stream chunk error"
+            val friendly = if (errMsg.contains("App Check", ignoreCase = true) || errMsg.contains("403")) {
+                "Firebase App Check rejected this build. Add your personal Gemini API key in the Keys tab."
+            } else {
+                errMsg
+            }
             _state.update {
                 it.copy(
                     partialText = "",
-                    errorMessage = e.localizedMessage ?: "Live stream chunk error"
+                    errorMessage = friendly
                 )
             }
         }
@@ -506,25 +526,22 @@ class LiveTranscriptionController(
         }
     }
 
-    /**
-     * Wraps raw little-endian PCM16 mono bytes in a standard 44-byte RIFF/WAV header entirely in RAM.
-     */
     private fun wrapPcm16AsWav(pcmData: ByteArray, sampleRate: Int): ByteArray {
         val totalDataLen = pcmData.size + 36
-        val byteRate = sampleRate * 2 // 16-bit mono
+        val byteRate = sampleRate * 2
         val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
 
         header.put("RIFF".toByteArray(Charsets.US_ASCII))
         header.putInt(totalDataLen)
         header.put("WAVE".toByteArray(Charsets.US_ASCII))
         header.put("fmt ".toByteArray(Charsets.US_ASCII))
-        header.putInt(16) // PCM subchunk size
-        header.putShort(1) // PCM format
-        header.putShort(1) // Mono
+        header.putInt(16)
+        header.putShort(1)
+        header.putShort(1)
         header.putInt(sampleRate)
         header.putInt(byteRate)
-        header.putShort(2) // Block align
-        header.putShort(16) // Bits per sample
+        header.putShort(2)
+        header.putShort(16)
         header.put("data".toByteArray(Charsets.US_ASCII))
         header.putInt(pcmData.size)
 

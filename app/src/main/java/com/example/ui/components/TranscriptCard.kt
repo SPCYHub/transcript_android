@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -49,6 +48,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.model.CantoneseFormat
 import com.example.model.DeepReviewResult
 import com.example.model.TranscriptRecord
@@ -88,16 +88,17 @@ fun TranscriptResultCard(
         modifier = modifier
             .fillMaxWidth()
             .testTag("transcript_result_card"),
-        shape = RoundedCornerShape(22.dp),
+        shape = RoundedCornerShape(24.dp),
         color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 2.dp,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+        tonalElevation = 1.dp,
+        shadowElevation = 2.dp,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Column(
             modifier = Modifier.padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // Telemetry header strip
+            // Telemetry strip
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -108,12 +109,20 @@ fun TranscriptResultCard(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    Icon(
-                        imageVector = Icons.Outlined.GraphicEq,
-                        contentDescription = "Audio source",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp)
-                    )
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.GraphicEq,
+                            contentDescription = "Audio source",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                     Column {
                         Text(
                             text = record.sourceType.label,
@@ -128,7 +137,6 @@ fun TranscriptResultCard(
                     }
                 }
 
-                // Engine & latency badge
                 Surface(
                     shape = RoundedCornerShape(10.dp),
                     color = MaterialTheme.colorScheme.primaryContainer
@@ -142,9 +150,9 @@ fun TranscriptResultCard(
                             imageVector = Icons.Outlined.Bolt,
                             contentDescription = "Engine speed",
                             tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.size(14.dp)
+                            modifier = Modifier.size(13.dp)
                         )
-                        val latencyTag = if (record.fromCache) "0ms cache" else "${record.latencyMillis}ms"
+                        val latencyTag = if (record.fromCache) "0ms" else "${record.latencyMillis}ms"
                         Text(
                             text = "${record.engineUsed.displayName} · $latencyTag",
                             style = MaterialTheme.typography.labelSmall,
@@ -157,7 +165,7 @@ fun TranscriptResultCard(
 
             if (!record.fallbackNote.isNullOrBlank()) {
                 Surface(
-                    shape = RoundedCornerShape(10.dp),
+                    shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.tertiaryContainer
                 ) {
                     Text(
@@ -169,10 +177,11 @@ fun TranscriptResultCard(
                 }
             }
 
-            // Format segmented selector (口語 Spoken | 書面語 Written | Dual View)
+            // Segmented Cantonese format switcher
             Surface(
                 shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
                 Row(
                     modifier = Modifier
@@ -182,83 +191,87 @@ fun TranscriptResultCard(
                 ) {
                     CantoneseFormat.entries.forEach { fmt ->
                         val selected = fmt == displayFormat
-                        Box(
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (selected) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surface.copy(alpha = 0f),
+                            shadowElevation = if (selected) 1.dp else 0.dp,
                             modifier = Modifier
                                 .weight(1f)
                                 .minimumInteractiveComponentSize()
                                 .clip(RoundedCornerShape(10.dp))
-                                .background(
-                                    if (selected) MaterialTheme.colorScheme.surface
-                                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0f)
-                                )
                                 .clickable { onSelectFormat(fmt) }
-                                .testTag("format_tab_${fmt.name.lowercase()}"),
-                            contentAlignment = Alignment.Center
+                                .testTag("format_tab_${fmt.name.lowercase()}")
                         ) {
-                            Text(
-                                text = fmt.label,
-                                style = MaterialTheme.typography.labelLarge,
-                                color = if (selected) {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                modifier = Modifier.padding(vertical = 8.dp)
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Main transcript body
-            AnimatedContent(
-                targetState = Triple(displayFormat, record.writtenChinese, record.deepReview),
-                label = "transcript_format_content"
-            ) { (format, written, review) ->
-                val spokenDisplay = review?.refinedSpoken ?: record.spokenCantonese
-                val writtenDisplay = review?.refinedWritten ?: written
-
-                SelectionContainer {
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        when (format) {
-                            CantoneseFormat.SPOKEN_CANTONESE -> {
-                                TranscriptBlock(
-                                    badge = if (review != null) "口語 · REFINED" else "口語 SPOKEN CANTONESE",
-                                    body = spokenDisplay
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = fmt.label,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = if (selected) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                    modifier = Modifier.padding(vertical = 8.dp)
                                 )
-                            }
-                            CantoneseFormat.WRITTEN_CHINESE -> {
-                                if (isConvertingWritten && writtenDisplay.isNullOrBlank()) {
-                                    ConvertingWrittenPlaceholder()
-                                } else {
-                                    TranscriptBlock(
-                                        badge = if (review != null) "書面語 · REFINED" else "書面語 WRITTEN CHINESE",
-                                        body = writtenDisplay.orEmpty().ifBlank { spokenDisplay }
-                                    )
-                                }
-                            }
-                            CantoneseFormat.DUAL_VIEW -> {
-                                TranscriptBlock(
-                                    badge = "口語 SPOKEN CANTONESE",
-                                    body = spokenDisplay
-                                )
-                                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
-                                if (isConvertingWritten && writtenDisplay.isNullOrBlank()) {
-                                    ConvertingWrittenPlaceholder()
-                                } else {
-                                    TranscriptBlock(
-                                        badge = "書面語 WRITTEN CHINESE",
-                                        body = writtenDisplay.orEmpty().ifBlank { "Tap to generate Written Chinese…" }
-                                    )
-                                }
                             }
                         }
                     }
                 }
             }
 
-            // Language mix metadata line
+            // Editorial Cantonese text surface
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+            ) {
+                AnimatedContent(
+                    targetState = Triple(displayFormat, record.writtenChinese, record.deepReview),
+                    label = "transcript_format_content",
+                    modifier = Modifier.padding(16.dp)
+                ) { (format, written, review) ->
+                    val spokenDisplay = review?.refinedSpoken ?: record.spokenCantonese
+                    val writtenDisplay = review?.refinedWritten ?: written
+
+                    SelectionContainer {
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            when (format) {
+                                CantoneseFormat.SPOKEN_CANTONESE -> {
+                                    TranscriptBlock(
+                                        badge = if (review != null) "口語 · REFINED" else "口語 SPOKEN",
+                                        body = spokenDisplay
+                                    )
+                                }
+                                CantoneseFormat.WRITTEN_CHINESE -> {
+                                    if (isConvertingWritten && writtenDisplay.isNullOrBlank()) {
+                                        ConvertingWrittenPlaceholder()
+                                    } else {
+                                        TranscriptBlock(
+                                            badge = if (review != null) "書面語 · REFINED" else "書面語 WRITTEN",
+                                            body = writtenDisplay.orEmpty().ifBlank { spokenDisplay }
+                                        )
+                                    }
+                                }
+                                CantoneseFormat.DUAL_VIEW -> {
+                                    TranscriptBlock(badge = "口語 SPOKEN", body = spokenDisplay)
+                                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                    if (isConvertingWritten && writtenDisplay.isNullOrBlank()) {
+                                        ConvertingWrittenPlaceholder()
+                                    } else {
+                                        TranscriptBlock(
+                                            badge = "書面語 WRITTEN",
+                                            body = writtenDisplay.orEmpty().ifBlank { "Tap to generate Written Chinese…" }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -268,11 +281,10 @@ fun TranscriptResultCard(
                     MetaChip(label = "Duration ${formatDurationMs(record.durationMillis)}")
                 }
                 if (record.deepReview != null) {
-                    MetaChip(label = "Gemini 4 Carbon · High Thinking")
+                    MetaChip(label = "High Thinking Review")
                 }
             }
 
-            // Primary action bar
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -288,7 +300,7 @@ fun TranscriptResultCard(
                     Icon(
                         imageVector = Icons.Filled.ContentCopy,
                         contentDescription = "Copy transcript",
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(17.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text("Copy")
@@ -305,14 +317,13 @@ fun TranscriptResultCard(
                     Icon(
                         imageVector = Icons.Filled.Share,
                         contentDescription = "Share transcript",
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(17.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text("Share")
                 }
             }
 
-            // Gemini 4 Carbon High Thinking Deep Review CTA
             Button(
                 onClick = onRunDeepReview,
                 enabled = !isRunningDeepReview,
@@ -333,7 +344,7 @@ fun TranscriptResultCard(
                         color = MaterialTheme.colorScheme.onSecondary
                     )
                     Spacer(modifier = Modifier.width(10.dp))
-                    Text("Deep Thinking with Gemini 4 Carbon…")
+                    Text("Analyzing with High Thinking…")
                 } else {
                     Icon(
                         imageVector = Icons.Filled.AutoAwesome,
@@ -342,11 +353,7 @@ fun TranscriptResultCard(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        if (record.deepReview == null) {
-                            "Deep Cantonese Review (High Thinking)"
-                        } else {
-                            "Re-run Deep Review"
-                        }
+                        if (record.deepReview == null) "Deep Cantonese Review" else "Re-run Deep Review"
                     )
                 }
             }
@@ -359,16 +366,12 @@ fun TranscriptResultCard(
                 )
             }
 
-            // Expandable Deep Review insights
             AnimatedVisibility(
                 visible = record.deepReview != null,
                 enter = fadeIn() + expandVertically(spring(stiffness = Spring.StiffnessMediumLow))
             ) {
                 record.deepReview?.let { review ->
-                    DeepReviewPanel(
-                        review = review,
-                        onCopyReply = onCopyText
-                    )
+                    DeepReviewPanel(review = review, onCopyReply = onCopyText)
                 }
             }
         }
@@ -376,20 +379,17 @@ fun TranscriptResultCard(
 }
 
 @Composable
-private fun TranscriptBlock(
-    badge: String,
-    body: String
-) {
+private fun TranscriptBlock(badge: String, body: String) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
             text = badge,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.primary,
-            fontWeight = FontWeight.SemiBold
+            fontWeight = FontWeight.Bold
         )
         Text(
             text = body,
-            style = MaterialTheme.typography.bodyLarge,
+            style = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 28.sp),
             color = MaterialTheme.colorScheme.onSurface
         )
     }
@@ -419,13 +419,13 @@ private fun ConvertingWrittenPlaceholder() {
 private fun MetaChip(label: String) {
     Surface(
         shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant
+        color = MaterialTheme.colorScheme.surfaceContainer
     ) {
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
         )
     }
 }
@@ -437,14 +437,14 @@ private fun DeepReviewPanel(
     onCopyReply: (String) -> Unit
 ) {
     Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.32f))
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
+                .padding(15.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Row(
@@ -463,7 +463,7 @@ private fun DeepReviewPanel(
                         modifier = Modifier.size(16.dp)
                     )
                     Text(
-                        text = "HIGH THINKING INSIGHTS",
+                        text = "DEEP REVIEW INSIGHTS",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.Bold
@@ -488,10 +488,7 @@ private fun DeepReviewPanel(
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(15.dp)
                         )
-                        Text(
-                            text = "Key Takeaways",
-                            style = MaterialTheme.typography.titleSmall
-                        )
+                        Text(text = "Key Takeaways", style = MaterialTheme.typography.titleSmall)
                     }
                     review.keyPoints.forEach { point ->
                         Text(
@@ -515,10 +512,7 @@ private fun DeepReviewPanel(
                             tint = MaterialTheme.colorScheme.tertiary,
                             modifier = Modifier.size(15.dp)
                         )
-                        Text(
-                            text = "Cantonese & Chinglish Notes",
-                            style = MaterialTheme.typography.titleSmall
-                        )
+                        Text(text = "Cantonese & Chinglish Notes", style = MaterialTheme.typography.titleSmall)
                     }
                     review.cantoneseNotes.forEach { note ->
                         Text(
@@ -542,10 +536,7 @@ private fun DeepReviewPanel(
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(15.dp)
                         )
-                        Text(
-                            text = "Tap to Copy HK Quick Reply",
-                            style = MaterialTheme.typography.titleSmall
-                        )
+                        Text(text = "Tap to Copy Quick Reply", style = MaterialTheme.typography.titleSmall)
                     }
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -555,10 +546,7 @@ private fun DeepReviewPanel(
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
                                 color = MaterialTheme.colorScheme.surface,
-                                border = BorderStroke(
-                                    1.dp,
-                                    MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
-                                ),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                                 modifier = Modifier
                                     .minimumInteractiveComponentSize()
                                     .clip(RoundedCornerShape(12.dp))

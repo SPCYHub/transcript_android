@@ -1,7 +1,7 @@
 package com.example.ai
 
 import android.util.Log
-import com.example.BuildConfig
+import com.example.data.SecureKeyStore
 import com.example.model.PreparedAudio
 import com.example.model.TranscriptionEngineId
 import com.squareup.moshi.Json
@@ -31,7 +31,6 @@ private const val OPENAI_BASE_URL = "https://api.openai.com/"
 private const val OPENAI_TIMEOUT_MS = 50_000L
 private const val PRIMARY_MODEL = "gpt-transcribe"
 private const val FALLBACK_MODEL = "gpt-4o-mini-transcribe"
-private const val PLACEHOLDER_KEY = "MY_OPENAI_API_KEY"
 
 @JsonClass(generateAdapter = true)
 data class OpenAiTranscriptionResponse(
@@ -39,10 +38,6 @@ data class OpenAiTranscriptionResponse(
 )
 
 interface OpenAiAudioApi {
-    /**
-     * Official OpenAI Audio Transcriptions endpoint (`POST /v1/audio/transcriptions`).
-     * Accepts multipart/form-data with audio `file`, `model`, `response_format`, and optional `prompt`.
-     */
     @Multipart
     @POST("v1/audio/transcriptions")
     suspend fun createTranscription(
@@ -61,21 +56,15 @@ data class OpenAiAudioOutput(
 )
 
 /**
- * OpenAI Speech-to-Text engine targeting the official `/v1/audio/transcriptions` API.
- *
- * Uses `gpt-transcribe` (recommended primary model per OpenAI docs) with automatic graceful
- * fallback to `gpt-4o-mini-transcribe` if an organization account returns a model-not-found error.
- * Automatically normalizes WhatsApp `.opus` Ogg files to `.ogg` filenames for full API compatibility.
+ * OpenAI Speech-to-Text engine targeting `/v1/audio/transcriptions`.
+ * Resolves the user's personal key from [SecureKeyStore] first, falling back to BuildConfig.
  */
-class OpenAiTranscriptionEngine {
-
-    private val apiKey: String
-        get() = BuildConfig.OPENAI_API_KEY.trim()
+class OpenAiTranscriptionEngine(
+    private val keyStore: SecureKeyStore
+) {
 
     val isConfigured: Boolean
-        get() = apiKey.isNotEmpty() &&
-            apiKey != PLACEHOLDER_KEY &&
-            !apiKey.startsWith("YOUR_")
+        get() = keyStore.hasEffectiveOpenAiKey()
 
     private val api: OpenAiAudioApi by lazy {
         val client = OkHttpClient.Builder()
@@ -102,10 +91,11 @@ class OpenAiTranscriptionEngine {
         customGlossary: String,
         preferWritten: Boolean = false
     ): Result<OpenAiAudioOutput> {
-        if (!isConfigured) {
+        val effectiveKey = keyStore.resolveEffectiveOpenAiKey()
+        if (effectiveKey.isNullOrBlank()) {
             return Result.failure(
                 IllegalStateException(
-                    "OpenAI API key is not configured. Add OPENAI_API_KEY in the AI Studio Secrets panel, or use Auto / Gemini."
+                    "OpenAI API key is not configured. Add your OpenAI API key in the Keys tab, or switch to Auto / Gemini."
                 )
             )
         }
@@ -119,6 +109,7 @@ class OpenAiTranscriptionEngine {
         return try {
             withTimeout(OPENAI_TIMEOUT_MS) {
                 val primaryResult = executeRequest(
+                    apiKey = effectiveKey,
                     modelId = PRIMARY_MODEL,
                     engineId = TranscriptionEngineId.OPENAI_GPT_TRANSCRIBE,
                     audio = audio,
@@ -129,7 +120,6 @@ class OpenAiTranscriptionEngine {
                     return@withTimeout primaryResult
                 }
 
-                // If account does not yet have gpt-transcribe enabled, cleanly try gpt-4o-mini-transcribe.
                 val errMsg = primaryResult.exceptionOrNull()?.message.orEmpty()
                 val shouldTryFallback = errMsg.contains("model", ignoreCase = true) ||
                     errMsg.contains("404") ||
@@ -138,6 +128,7 @@ class OpenAiTranscriptionEngine {
                 if (shouldTryFallback) {
                     Log.w(TAG, "Primary model $PRIMARY_MODEL unavailable ($errMsg); retrying with $FALLBACK_MODEL")
                     executeRequest(
+                        apiKey = effectiveKey,
                         modelId = FALLBACK_MODEL,
                         engineId = TranscriptionEngineId.OPENAI_MINI_FALLBACK,
                         audio = audio,
@@ -162,6 +153,7 @@ class OpenAiTranscriptionEngine {
     }
 
     private suspend fun executeRequest(
+        apiKey: String,
         modelId: String,
         engineId: TranscriptionEngineId,
         audio: PreparedAudio,
@@ -210,7 +202,7 @@ class OpenAiTranscriptionEngine {
             }
         }
         return when (httpCode) {
-            401 -> "OpenAI authentication failed (401). Verify OPENAI_API_KEY in AI Studio Secrets."
+            401 -> "OpenAI authentication failed (401). Check your OpenAI API key in the Keys tab."
             429 -> "OpenAI rate limit or quota reached (429). Switch to Gemini or retry shortly."
             413 -> "Audio payload exceeds OpenAI's upload limit (413)."
             else -> "OpenAI request failed with HTTP $httpCode."

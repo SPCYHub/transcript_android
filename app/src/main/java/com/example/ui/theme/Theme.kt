@@ -5,6 +5,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import com.example.model.ThemePreference
 
 private val StudioLightColorScheme = lightColorScheme(
     primary = StudioJadePrimary,
@@ -16,9 +17,11 @@ private val StudioLightColorScheme = lightColorScheme(
     secondaryContainer = StudioSlateContainer,
     onSecondaryContainer = StudioSlateOnContainer,
     tertiary = StudioAmberTertiary,
+    onTertiary = StudioAmberOnTertiary,
     tertiaryContainer = StudioAmberContainer,
     onTertiaryContainer = StudioAmberOnContainer,
     error = StudioRecordingCrimson,
+    onError = StudioRecordingOnError,
     errorContainer = StudioRecordingContainer,
     onErrorContainer = StudioRecordingOnContainer,
     background = StudioLightBackground,
@@ -27,8 +30,12 @@ private val StudioLightColorScheme = lightColorScheme(
     onSurface = StudioLightInk,
     surfaceVariant = StudioLightSurfaceVariant,
     onSurfaceVariant = StudioLightInkMuted,
+    surfaceContainerLowest = StudioLightSurface,
+    surfaceContainerLow = StudioLightSurfaceContainerLow,
+    surfaceContainer = StudioLightSurfaceVariant,
+    surfaceContainerHigh = StudioLightSurfaceContainerHigh,
     outline = StudioLightOutline,
-    outlineVariant = StudioLightSurfaceContainer
+    outlineVariant = StudioLightOutlineVariant
 )
 
 private val StudioDarkColorScheme = darkColorScheme(
@@ -36,14 +43,16 @@ private val StudioDarkColorScheme = darkColorScheme(
     onPrimary = StudioDarkJadeOnPrimary,
     primaryContainer = StudioDarkJadeContainer,
     onPrimaryContainer = StudioDarkJadeOnContainer,
-    secondary = StudioSlateContainer,
-    onSecondary = StudioLightInk,
-    secondaryContainer = StudioDarkSurfaceVariant,
-    onSecondaryContainer = StudioDarkInk,
-    tertiary = StudioAmberContainer,
-    tertiaryContainer = StudioDarkSurfaceVariant,
-    onTertiaryContainer = StudioAmberContainer,
+    secondary = StudioDarkSlateSecondary,
+    onSecondary = StudioDarkSlateOnSecondary,
+    secondaryContainer = StudioDarkSlateContainer,
+    onSecondaryContainer = StudioDarkSlateOnContainer,
+    tertiary = StudioDarkAmberTertiary,
+    onTertiary = StudioDarkAmberOnTertiary,
+    tertiaryContainer = StudioDarkAmberContainer,
+    onTertiaryContainer = StudioDarkAmberOnContainer,
     error = StudioDarkRecordingCoral,
+    onError = StudioDarkRecordingOnError,
     errorContainer = StudioDarkRecordingContainer,
     onErrorContainer = StudioDarkRecordingOnContainer,
     background = StudioDarkBackground,
@@ -52,16 +61,25 @@ private val StudioDarkColorScheme = darkColorScheme(
     onSurface = StudioDarkInk,
     surfaceVariant = StudioDarkSurfaceVariant,
     onSurfaceVariant = StudioDarkInkMuted,
+    surfaceContainerLowest = StudioDarkBackground,
+    surfaceContainerLow = StudioDarkSurfaceContainerLow,
+    surfaceContainer = StudioDarkSurfaceVariant,
+    surfaceContainerHigh = StudioDarkSurfaceContainerHigh,
     outline = StudioDarkOutline,
-    outlineVariant = StudioDarkSurfaceVariant
+    outlineVariant = StudioDarkOutlineVariant
 )
 
 @Composable
 fun CantoScribeTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    themePreference: ThemePreference = ThemePreference.SYSTEM,
     content: @Composable () -> Unit
 ) {
-    val colorScheme = if (darkTheme) StudioDarkColorScheme else StudioLightColorScheme
+    val useDark = when (themePreference) {
+        ThemePreference.SYSTEM -> isSystemInDarkTheme()
+        ThemePreference.LIGHT -> false
+        ThemePreference.DARK -> true
+    }
+    val colorScheme = if (useDark) StudioDarkColorScheme else StudioLightColorScheme
 
     MaterialTheme(
         colorScheme = colorScheme,

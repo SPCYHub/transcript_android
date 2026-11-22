@@ -9,12 +9,16 @@ import com.example.ai.TranscriptionRouter
 import com.example.audio.AudioInputHandler
 import com.example.core.AppContainer
 import com.example.data.PreferencesRepository
+import com.example.data.SecureKeyStore
 import com.example.data.SessionTranscriptStore
+import com.example.model.ApiKeyStatus
 import com.example.model.AudioSourceType
 import com.example.model.CantoneseFormat
+import com.example.model.KeyTestResult
 import com.example.model.PreparedAudio
 import com.example.model.RoutingMode
 import com.example.model.StudioUiState
+import com.example.model.ThemePreference
 import com.example.model.TranscriptRecord
 import com.example.model.UserPreferences
 import kotlinx.coroutines.CancellationException
@@ -36,7 +40,7 @@ data class SandboxState(
     val isHoldToTalk: Boolean = false,
     val liveLevel: Float = 0.08f,
     val elapsedMillis: Long = 0L,
-    val statusNote: String = "Hold to speak or tap for hands-free live Cantonese",
+    val statusNote: String = "Hold to speak or quick tap for hands-free live Cantonese",
     val lastInsertedLength: Int = 0
 )
 
@@ -45,6 +49,7 @@ class StudioViewModel(
     private val router: TranscriptionRouter = AppContainer.transcriptionRouter,
     private val liveController: LiveTranscriptionController = AppContainer.liveTranscriptionController,
     private val preferencesRepo: PreferencesRepository = AppContainer.preferencesRepository,
+    private val keyStore: SecureKeyStore = AppContainer.secureKeyStore,
     private val sessionStore: SessionTranscriptStore = AppContainer.sessionStore
 ) : ViewModel() {
 
@@ -54,10 +59,15 @@ class StudioViewModel(
         initialValue = UserPreferences()
     )
 
+    val apiKeyStatus: StateFlow<ApiKeyStatus> = keyStore.status
+
     val sessionRecords: StateFlow<List<TranscriptRecord>> = sessionStore.records
 
-    val isOpenAiConfigured: Boolean
-        get() = router.isOpenAiReady
+    private val _geminiKeyTest = MutableStateFlow<KeyTestResult>(KeyTestResult.Idle)
+    val geminiKeyTest: StateFlow<KeyTestResult> = _geminiKeyTest.asStateFlow()
+
+    private val _openAiKeyTest = MutableStateFlow<KeyTestResult>(KeyTestResult.Idle)
+    val openAiKeyTest: StateFlow<KeyTestResult> = _openAiKeyTest.asStateFlow()
 
     private val _uiState = MutableStateFlow<StudioUiState>(StudioUiState.Idle)
     val uiState: StateFlow<StudioUiState> = _uiState.asStateFlow()
@@ -109,17 +119,97 @@ class StudioViewModel(
         viewModelScope.launch {
             preferencesRepo.setAutoCopyOnFinish(enabled)
             _snackbarMessage.value = if (enabled) {
-                "Auto-copy enabled: finished transcripts copy automatically"
+                "Auto-copy enabled"
             } else {
-                "Auto-copy disabled"
+                "Auto-copy paused"
             }
+        }
+    }
+
+    fun setIncludeWrittenInAuto(include: Boolean) {
+        viewModelScope.launch {
+            preferencesRepo.setIncludeWrittenInAuto(include)
+        }
+    }
+
+    fun setThemePreference(theme: ThemePreference) {
+        viewModelScope.launch {
+            preferencesRepo.setThemePreference(theme)
         }
     }
 
     fun setCustomGlossary(glossary: String) {
         viewModelScope.launch {
             preferencesRepo.setCustomGlossary(glossary)
-            _snackbarMessage.value = "Cantonese glossary hints saved"
+            _snackbarMessage.value = "Cantonese vocabulary hints saved"
+        }
+    }
+
+    // --- End-User API Key Management (Encrypted On-Device Vault) ---
+
+    fun saveGeminiApiKey(rawKey: String) {
+        val cleaned = rawKey.trim()
+        keyStore.saveGeminiApiKey(cleaned)
+        _geminiKeyTest.value = KeyTestResult.Idle
+        _snackbarMessage.value = if (cleaned.isNotEmpty()) {
+            "Personal Gemini key saved (encrypted on device)"
+        } else {
+            "Personal Gemini key cleared — using Firebase AI Logic"
+        }
+    }
+
+    fun clearGeminiApiKey() {
+        keyStore.clearGeminiApiKey()
+        _geminiKeyTest.value = KeyTestResult.Idle
+        _snackbarMessage.value = "Personal Gemini key removed"
+    }
+
+    fun setUsePersonalGeminiKey(enabled: Boolean) {
+        keyStore.setUsePersonalGeminiKey(enabled)
+        _snackbarMessage.value = if (enabled) {
+            "Routing Gemini via personal API key"
+        } else {
+            "Routing Gemini via built-in Firebase AI Logic"
+        }
+    }
+
+    fun saveCustomGeminiModel(modelName: String) {
+        keyStore.saveCustomGeminiModel(modelName)
+        _snackbarMessage.value = if (modelName.isBlank()) {
+            "Gemini model reset to defaults"
+        } else {
+            "Custom Gemini model saved: ${modelName.trim()}"
+        }
+    }
+
+    fun saveOpenAiApiKey(rawKey: String) {
+        val cleaned = rawKey.trim()
+        keyStore.saveOpenAiApiKey(cleaned)
+        _openAiKeyTest.value = KeyTestResult.Idle
+        _snackbarMessage.value = if (cleaned.isNotEmpty()) {
+            "OpenAI API key saved (encrypted on device)"
+        } else {
+            "Personal OpenAI key cleared"
+        }
+    }
+
+    fun clearOpenAiApiKey() {
+        keyStore.clearOpenAiApiKey()
+        _openAiKeyTest.value = KeyTestResult.Idle
+        _snackbarMessage.value = "Personal OpenAI key removed"
+    }
+
+    fun testGeminiKey(candidateKey: String? = null) {
+        viewModelScope.launch {
+            _geminiKeyTest.value = KeyTestResult.Testing
+            _geminiKeyTest.value = keyStore.verifyGeminiKey(candidateKey)
+        }
+    }
+
+    fun testOpenAiKey(candidateKey: String? = null) {
+        viewModelScope.launch {
+            _openAiKeyTest.value = KeyTestResult.Testing
+            _openAiKeyTest.value = keyStore.verifyOpenAiKey(candidateKey)
         }
     }
 
@@ -139,7 +229,7 @@ class StudioViewModel(
         }
     }
 
-    // --- Real-Time Live Studio Streaming (No Post-Recording Wait) ---
+    // --- Real-Time Live Studio Streaming ---
 
     fun startStudioLive(isHoldToTalk: Boolean) {
         if (_sandboxState.value.isStreaming) {
@@ -156,10 +246,12 @@ class StudioViewModel(
                 sourceType = AudioSourceType.STUDIO_RECORD
             )
             if (started.isFailure) {
+                val msg = started.exceptionOrNull()?.message ?: "Unable to start live stream."
                 _uiState.value = StudioUiState.Error(
-                    message = started.exceptionOrNull()?.message ?: "Unable to start live stream.",
+                    message = msg,
                     canRetryWithAlternateEngine = prefs.routingMode == RoutingMode.OPENAI_ONLY,
-                    suggestedEngine = if (prefs.routingMode == RoutingMode.OPENAI_ONLY) RoutingMode.GEMINI_ONLY else null
+                    suggestedEngine = if (prefs.routingMode == RoutingMode.OPENAI_ONLY) RoutingMode.GEMINI_ONLY else null,
+                    isAppCheckOrKeyError = isKeyOrAppCheckError(msg)
                 )
                 return@launch
             }
@@ -326,7 +418,7 @@ class StudioViewModel(
                     isConvertingWritten = false,
                     isRunningDeepReview = false
                 )
-                _snackbarMessage.value = "Deep Cantonese Review complete (Gemini 4 Carbon)"
+                _snackbarMessage.value = "Deep Cantonese Review complete"
             }.onFailure { err ->
                 Log.e(TAG, "Deep review failed", err)
                 val latest = _uiState.value as? StudioUiState.Success ?: return@onFailure
@@ -389,28 +481,41 @@ class StudioViewModel(
                     convertCurrentRecordToWritten(record)
                 }
             }.onFailure { err ->
+                val errMsg = err.message ?: "Transcription failed."
+                val openAiReady = router.isOpenAiReady
                 val alternate = when (effectiveMode) {
                     RoutingMode.OPENAI_ONLY -> RoutingMode.GEMINI_ONLY
-                    RoutingMode.GEMINI_ONLY -> if (isOpenAiConfigured) RoutingMode.OPENAI_ONLY else null
-                    RoutingMode.AUTO -> if (isOpenAiConfigured) RoutingMode.GEMINI_ONLY else null
+                    RoutingMode.GEMINI_ONLY -> if (openAiReady) RoutingMode.OPENAI_ONLY else null
+                    RoutingMode.AUTO -> if (openAiReady) RoutingMode.GEMINI_ONLY else null
                 }
                 _uiState.value = StudioUiState.Error(
-                    message = err.message ?: "Transcription failed.",
+                    message = errMsg,
                     canRetryWithAlternateEngine = alternate != null,
-                    suggestedEngine = alternate
+                    suggestedEngine = alternate,
+                    isAppCheckOrKeyError = isKeyOrAppCheckError(errMsg)
                 )
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Unexpected error during transcription", e)
+            val errMsg = e.localizedMessage ?: "Unexpected transcription error."
             _uiState.value = StudioUiState.Error(
-                message = e.localizedMessage ?: "Unexpected transcription error."
+                message = errMsg,
+                isAppCheckOrKeyError = isKeyOrAppCheckError(errMsg)
             )
         }
     }
 
-    // --- Real-Time Live Keyboard In-App Sandbox Controls ---
+    private fun isKeyOrAppCheckError(message: String): Boolean {
+        return message.contains("App Check", ignoreCase = true) ||
+            message.contains("token is invalid", ignoreCase = true) ||
+            message.contains("API key", ignoreCase = true) ||
+            message.contains("401") ||
+            message.contains("403")
+    }
+
+    // --- Live Keyboard In-App Sandbox Controls ---
 
     fun updateSandboxText(newText: String) {
         _sandboxState.value = _sandboxState.value.copy(text = newText)
@@ -519,7 +624,7 @@ class StudioViewModel(
                 statusNote = if (record != null) {
                     "Live stream complete · ${record.engineUsed.displayName}"
                 } else {
-                    "Hold to speak or tap for hands-free live Cantonese"
+                    "Hold to speak or quick tap for hands-free live Cantonese"
                 }
             )
         }

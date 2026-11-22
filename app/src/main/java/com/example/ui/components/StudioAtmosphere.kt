@@ -1,9 +1,14 @@
 package com.example.ui.components
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -34,39 +39,130 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.model.ApiKeyStatus
 import com.example.model.RoutingMode
 import java.util.Locale
+import kotlin.math.PI
+import kotlin.math.sin
 
 fun Modifier.studioGridBackground(
     dotColor: Color,
-    glowColor: Color
+    primaryGlow: Color,
+    tertiaryGlow: Color
 ): Modifier = this.drawBehind {
-    // Soft radial acoustic glow at top-end for Crisp Audio Studio depth.
+    // Dual ambient studio acoustic glow (top-right jade + subtle bottom-left amber warmth)
     drawRect(
         brush = Brush.radialGradient(
-            colors = listOf(glowColor.copy(alpha = 0.14f), Color.Transparent),
-            center = Offset(size.width * 0.85f, size.height * 0.08f),
-            radius = size.maxDimension * 0.55f
+            colors = listOf(primaryGlow.copy(alpha = 0.14f), Color.Transparent),
+            center = Offset(size.width * 0.88f, size.height * 0.06f),
+            radius = size.maxDimension * 0.56f
         )
     )
-    // Subtle architectural studio dot grid.
+    drawRect(
+        brush = Brush.radialGradient(
+            colors = listOf(tertiaryGlow.copy(alpha = 0.06f), Color.Transparent),
+            center = Offset(size.width * 0.12f, size.height * 0.82f),
+            radius = size.maxDimension * 0.45f
+        )
+    )
+
+    // Precision architectural micro-dot matrix
     val step = 28.dp.toPx()
-    val radius = 1.dp.toPx()
+    val radius = 0.9.dp.toPx()
     var y = step / 2f
     while (y < size.height) {
         var x = step / 2f
         while (x < size.width) {
             drawCircle(
-                color = dotColor.copy(alpha = 0.22f),
+                color = dotColor.copy(alpha = 0.18f),
                 radius = radius,
                 center = Offset(x, y)
             )
             x += step
         }
         y += step
+    }
+}
+
+/**
+ * Calm ambient studio acoustic emblem rendered in the Studio idle canvas.
+ */
+@Composable
+fun AmbientAcousticEmblem(
+    modifier: Modifier = Modifier
+) {
+    val transition = rememberInfiniteTransition(label = "ambient_acoustic_rings")
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = (2.0 * PI).toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 3600),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "ambient_phase"
+    )
+
+    val primary = MaterialTheme.colorScheme.primary
+    val primaryContainer = MaterialTheme.colorScheme.primaryContainer
+    val outline = MaterialTheme.colorScheme.outline
+
+    Canvas(modifier = modifier.size(116.dp)) {
+        val center = Offset(size.width / 2f, size.height / 2f)
+        val outerRadius = size.minDimension * 0.48f
+        val midRadius = size.minDimension * 0.36f
+        val innerRadius = size.minDimension * 0.25f
+
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(primary.copy(alpha = 0.22f), Color.Transparent),
+                center = center,
+                radius = outerRadius
+            ),
+            radius = outerRadius,
+            center = center
+        )
+        drawCircle(
+            color = outline.copy(alpha = 0.26f),
+            radius = outerRadius * 0.96f,
+            center = center,
+            style = Stroke(width = 1.dp.toPx())
+        )
+        drawCircle(
+            color = primary.copy(alpha = 0.22f),
+            radius = midRadius,
+            center = center,
+            style = Stroke(width = 1.25.dp.toPx())
+        )
+        drawCircle(
+            color = primaryContainer.copy(alpha = 0.82f),
+            radius = innerRadius,
+            center = center
+        )
+
+        // Subtle breathing 7-bar acoustic waveform inside the studio emblem
+        val barCount = 7
+        val barWidth = 3.2.dp.toPx()
+        val gap = 3.5.dp.toPx()
+        val totalW = barCount * barWidth + (barCount - 1) * gap
+        val startX = center.x - totalW / 2f
+        val maxHalf = innerRadius * 0.58f
+
+        for (i in 0 until barCount) {
+            val envelope = 1f - kotlin.math.abs(i - 3) / 4.2f
+            val wave = 0.45f + 0.55f * ((sin(phase + i * 0.7f) + 1f) / 2f)
+            val halfH = (maxHalf * envelope * wave).coerceAtLeast(3.dp.toPx())
+            val x = startX + i * (barWidth + gap)
+            drawRoundRect(
+                color = primary,
+                topLeft = Offset(x, center.y - halfH),
+                size = Size(barWidth, halfH * 2f),
+                cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f)
+            )
+        }
     }
 }
 
@@ -81,30 +177,37 @@ fun LiveWaveformVisualizer(
     } else {
         MaterialTheme.colorScheme.primary
     }
-    val trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f)
-    val bars = if (amplitudes.isEmpty()) List(36) { 0.12f } else amplitudes
+    val softActiveColor = activeColor.copy(alpha = 0.42f)
+    val trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.26f)
+    val bars = if (amplitudes.isEmpty()) List(40) { 0.1f } else amplitudes
 
     Canvas(
         modifier = modifier
             .fillMaxWidth()
-            .height(64.dp)
+            .height(58.dp)
     ) {
         val count = bars.size.coerceAtLeast(1)
-        val gap = 4.dp.toPx()
-        val barWidth = ((size.width - gap * (count - 1)) / count).coerceAtLeast(2.dp.toPx())
+        val gap = 3.5.dp.toPx()
+        val barWidth = ((size.width - gap * (count - 1)) / count).coerceAtLeast(2.2.dp.toPx())
         val centerY = size.height / 2f
-        val maxHalfHeight = (size.height * 0.44f).coerceAtLeast(4f)
+        val maxHalfHeight = (size.height * 0.46f).coerceAtLeast(4f)
+
+        // Subtle center acoustic baseline
+        drawLine(
+            color = trackColor,
+            start = Offset(0f, centerY),
+            end = Offset(size.width, centerY),
+            strokeWidth = 1.dp.toPx()
+        )
 
         bars.forEachIndexed { index, rawLevel ->
             val clamped = rawLevel.coerceIn(0.06f, 1f)
             val halfHeight = (clamped * maxHalfHeight).coerceAtLeast(3.dp.toPx())
             val x = index * (barWidth + gap)
-            val color = if (isRecording && clamped > 0.16f) {
-                activeColor
-            } else if (isRecording) {
-                activeColor.copy(alpha = 0.45f)
-            } else {
-                trackColor
+            val color = when {
+                isRecording && clamped > 0.18f -> activeColor
+                isRecording -> softActiveColor
+                else -> trackColor
             }
 
             drawRoundRect(
@@ -120,15 +223,15 @@ fun LiveWaveformVisualizer(
 @Composable
 fun EngineSelectorPillBar(
     selectedMode: RoutingMode,
-    isOpenAiConfigured: Boolean,
+    apiKeyStatus: ApiKeyStatus,
     onSelectMode: (RoutingMode) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Row(
             modifier = Modifier.padding(4.dp),
@@ -151,34 +254,43 @@ fun EngineSelectorPillBar(
                     label = "engine_pill_fg"
                 )
 
-                val showDot = mode == RoutingMode.OPENAI_ONLY
-                val dotColor = if (isOpenAiConfigured) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.tertiary
+                val indicatorColor: Color? = when (mode) {
+                    RoutingMode.GEMINI_ONLY -> if (apiKeyStatus.isUsingDirectGemini) {
+                        MaterialTheme.colorScheme.primary
+                    } else null
+                    RoutingMode.OPENAI_ONLY -> if (apiKeyStatus.isOpenAiConfigured) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.tertiary
+                    }
+                    RoutingMode.AUTO -> null
                 }
 
-                Box(
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = containerColor,
+                    shadowElevation = if (isSelected) 1.dp else 0.dp,
+                    border = if (isSelected) {
+                        BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                    } else null,
                     modifier = Modifier
                         .weight(1f)
                         .minimumInteractiveComponentSize()
                         .clip(RoundedCornerShape(12.dp))
-                        .background(containerColor)
                         .clickable { onSelectMode(mode) }
-                        .testTag("routing_mode_${mode.name.lowercase()}"),
-                    contentAlignment = Alignment.Center
+                        .testTag("routing_mode_${mode.name.lowercase()}")
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp)
                     ) {
-                        if (showDot) {
+                        if (indicatorColor != null) {
                             Box(
                                 modifier = Modifier
-                                    .size(7.dp)
+                                    .size(6.dp)
                                     .clip(CircleShape)
-                                    .background(dotColor)
+                                    .background(indicatorColor)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                         }
@@ -206,7 +318,7 @@ fun AnimatedLevelBar(
         animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
         label = "level_meter"
     )
-    val track = MaterialTheme.colorScheme.surfaceVariant
+    val track = MaterialTheme.colorScheme.surfaceContainerHigh
     val fill = if (isActive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
 
     Canvas(

@@ -21,11 +21,52 @@ enum class RoutingMode(val label: String) {
     OPENAI_ONLY("OpenAI")
 }
 
+enum class ThemePreference(val label: String) {
+    SYSTEM("System"),
+    LIGHT("Light"),
+    DARK("Dark")
+}
+
 enum class TranscriptionEngineId(val displayName: String, val modelTag: String) {
     GEMINI_FLASH("Gemini 3.8 Flash", "gemini-3.8-flash"),
     GEMINI_FLASH_LITE("Gemini 3.5 Lite", "gemini-3.5-flash-lite"),
+    GEMINI_DIRECT_FLASH("Gemini Direct", "gemini-3.8-flash"),
+    GEMINI_DIRECT_LITE("Gemini Direct Lite", "gemini-3.5-flash-lite"),
     OPENAI_GPT_TRANSCRIBE("OpenAI Transcribe", "gpt-transcribe"),
     OPENAI_MINI_FALLBACK("OpenAI Mini", "gpt-4o-mini-transcribe")
+}
+
+data class ApiKeyStatus(
+    val hasUserGeminiKey: Boolean = false,
+    val maskedGeminiKey: String? = null,
+    val usePersonalGeminiKey: Boolean = true,
+    val customGeminiModel: String = "",
+    val hasUserOpenAiKey: Boolean = false,
+    val maskedOpenAiKey: String? = null,
+    val hasBuildOpenAiKey: Boolean = false
+) {
+    val isUsingDirectGemini: Boolean
+        get() = hasUserGeminiKey && usePersonalGeminiKey
+
+    val isOpenAiConfigured: Boolean
+        get() = hasUserOpenAiKey || hasBuildOpenAiKey
+
+    val geminiProviderLabel: String
+        get() = if (isUsingDirectGemini) "Personal Key · Direct" else "Firebase AI Logic"
+
+    val openAiProviderLabel: String
+        get() = when {
+            hasUserOpenAiKey -> "Personal Key"
+            hasBuildOpenAiKey -> "Build Secret"
+            else -> "Not Set"
+        }
+}
+
+sealed interface KeyTestResult {
+    data object Idle : KeyTestResult
+    data object Testing : KeyTestResult
+    data class Valid(val detail: String) : KeyTestResult
+    data class Invalid(val error: String) : KeyTestResult
 }
 
 data class PreparedAudio(
@@ -88,7 +129,8 @@ data class UserPreferences(
     val defaultFormat: CantoneseFormat = CantoneseFormat.SPOKEN_CANTONESE,
     val includeWrittenInAuto: Boolean = true,
     val autoCopyOnFinish: Boolean = true,
-    val customGlossary: String = ""
+    val customGlossary: String = "",
+    val themePreference: ThemePreference = ThemePreference.SYSTEM
 )
 
 data class AudioCaptureMetrics(
@@ -126,6 +168,7 @@ sealed interface StudioUiState {
     data class Error(
         val message: String,
         val canRetryWithAlternateEngine: Boolean = false,
-        val suggestedEngine: RoutingMode? = null
+        val suggestedEngine: RoutingMode? = null,
+        val isAppCheckOrKeyError: Boolean = false
     ) : StudioUiState
 }

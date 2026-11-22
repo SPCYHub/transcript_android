@@ -2,7 +2,7 @@ package com.example.ai
 
 import android.util.Base64
 import android.util.Log
-import com.example.BuildConfig
+import com.example.data.SecureKeyStore
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -14,7 +14,6 @@ import java.util.concurrent.TimeUnit
 private const val TAG = "OpenAiRealtimeStream"
 private const val REALTIME_TRANSCRIPTION_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
 private const val REALTIME_TRANSCRIBE_MODEL = "gpt-live-transcribe"
-private const val PLACEHOLDER_KEY = "MY_OPENAI_API_KEY"
 
 interface RealtimeTranscriptListener {
     fun onConnected()
@@ -26,21 +25,14 @@ interface RealtimeTranscriptListener {
 
 /**
  * Official OpenAI Realtime Transcription WebSocket client.
- *
- * Connects to `wss://api.openai.com/v1/realtime?intent=transcription`, configures a live
- * `transcription` session using `gpt-live-transcribe` with 24kHz PCM16 audio + server VAD +
- * Cantonese Traditional-HK prompt priming, streams live audio via `input_audio_buffer.append`,
- * and delivers real-time `conversation.item.input_audio_transcription.delta` and `.completed` events.
+ * Reads user-entered OpenAI API key from [SecureKeyStore] first, falling back to BuildConfig.
  */
-class OpenAiRealtimeStreamEngine {
-
-    private val apiKey: String
-        get() = BuildConfig.OPENAI_API_KEY.trim()
+class OpenAiRealtimeStreamEngine(
+    private val keyStore: SecureKeyStore
+) {
 
     val isConfigured: Boolean
-        get() = apiKey.isNotEmpty() &&
-            apiKey != PLACEHOLDER_KEY &&
-            !apiKey.startsWith("YOUR_")
+        get() = keyStore.hasEffectiveOpenAiKey()
 
     private val wsClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -59,8 +51,9 @@ class OpenAiRealtimeStreamEngine {
         preferWritten: Boolean,
         listener: RealtimeTranscriptListener
     ): Boolean {
-        if (!isConfigured) {
-            listener.onError("OpenAI API key not configured in AI Studio Secrets.")
+        val effectiveKey = keyStore.resolveEffectiveOpenAiKey()
+        if (effectiveKey.isNullOrBlank()) {
+            listener.onError("OpenAI API key not configured. Add it in the Keys tab.")
             return false
         }
 
@@ -68,7 +61,7 @@ class OpenAiRealtimeStreamEngine {
 
         val request = Request.Builder()
             .url(REALTIME_TRANSCRIPTION_URL)
-            .header("Authorization", "Bearer $apiKey")
+            .header("Authorization", "Bearer $effectiveKey")
             .build()
 
         val prompt = CantonesePrompts.buildOpenAiPrompt(

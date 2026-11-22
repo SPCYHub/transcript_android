@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.model.CantoneseFormat
 import com.example.model.RoutingMode
+import com.example.model.ThemePreference
 import com.example.model.UserPreferences
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
@@ -29,6 +30,7 @@ class PreferencesRepository(private val appContext: Context) {
         val INCLUDE_WRITTEN_AUTO = booleanPreferencesKey("include_written_auto")
         val AUTO_COPY_ON_FINISH = booleanPreferencesKey("auto_copy_on_finish")
         val CUSTOM_GLOSSARY = stringPreferencesKey("custom_glossary")
+        val THEME_PREFERENCE = stringPreferencesKey("theme_preference")
     }
 
     val preferencesFlow: Flow<UserPreferences> = appContext.cantoPrefsDataStore.data
@@ -49,7 +51,10 @@ class PreferencesRepository(private val appContext: Context) {
                     ?: CantoneseFormat.SPOKEN_CANTONESE,
                 includeWrittenInAuto = prefs[Keys.INCLUDE_WRITTEN_AUTO] ?: true,
                 autoCopyOnFinish = prefs[Keys.AUTO_COPY_ON_FINISH] ?: true,
-                customGlossary = prefs[Keys.CUSTOM_GLOSSARY].orEmpty()
+                customGlossary = prefs[Keys.CUSTOM_GLOSSARY].orEmpty(),
+                themePreference = prefs[Keys.THEME_PREFERENCE]
+                    ?.let { runCatching { ThemePreference.valueOf(it) }.getOrNull() }
+                    ?: ThemePreference.SYSTEM
             )
         }
 
@@ -73,5 +78,9 @@ class PreferencesRepository(private val appContext: Context) {
 
     suspend fun setCustomGlossary(glossary: String) {
         appContext.cantoPrefsDataStore.edit { it[Keys.CUSTOM_GLOSSARY] = glossary.trim() }
+    }
+
+    suspend fun setThemePreference(theme: ThemePreference) {
+        appContext.cantoPrefsDataStore.edit { it[Keys.THEME_PREFERENCE] = theme.name }
     }
 }
