@@ -5,8 +5,11 @@ import android.content.Intent
 import android.provider.Settings
 import android.view.inputmethod.InputMethodManager
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -26,6 +29,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Settings
@@ -33,8 +37,6 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Translate
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -51,8 +53,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -70,7 +76,9 @@ fun KeyboardScreen(
     preferences: UserPreferences,
     hasMicPermission: Boolean,
     onRequestMicPermission: () -> Unit,
-    onToggleSandboxRecord: () -> Unit,
+    onStartSandboxLive: (isHoldToTalk: Boolean) -> Unit,
+    onLockSandboxHandsFree: () -> Unit,
+    onStopSandboxLive: () -> Unit,
     onSandboxTextChange: (String) -> Unit,
     onAppendSymbol: (String) -> Unit,
     onUndoSandbox: () -> Unit,
@@ -80,6 +88,7 @@ fun KeyboardScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
     var isImeEnabled by remember { mutableStateOf(checkImeEnabled(context)) }
@@ -112,7 +121,7 @@ fun KeyboardScreen(
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
-                    text = "SYSTEM IME + SANDBOX",
+                    text = "LIVE VOICE IME + SANDBOX",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.Bold
@@ -151,7 +160,7 @@ fun KeyboardScreen(
                                 tint = MaterialTheme.colorScheme.primary
                             )
                             Text(
-                                text = "System-Wide Voice Keyboard",
+                                text = "System-Wide Live Keyboard",
                                 style = MaterialTheme.typography.titleMedium
                             )
                         }
@@ -191,7 +200,7 @@ fun KeyboardScreen(
                     }
 
                     Text(
-                        text = "Dictate authentic Cantonese (口語 / 書面語) directly inside WhatsApp, Chrome, Notes, or any Android app using CantoScribe Voice.",
+                        text = "Words type themselves live into WhatsApp, Notes, or Chrome while you speak — Hold to Speak for fast replies or Quick Tap for hands-free Cantonese dictation.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -245,7 +254,7 @@ fun KeyboardScreen(
                 }
             }
 
-            // Interactive Live Dictation Sandbox
+            // Real-Time Live Dictation Sandbox
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(22.dp),
@@ -267,13 +276,13 @@ fun KeyboardScreen(
                             style = MaterialTheme.typography.titleMedium
                         )
                         Text(
-                            text = if (sandboxState.isRecording) {
-                                formatDurationMs(sandboxState.elapsedMillis)
+                            text = if (sandboxState.isStreaming) {
+                                "LIVE · ${formatDurationMs(sandboxState.elapsedMillis)}"
                             } else {
                                 preferences.routingMode.label
                             },
                             style = MaterialTheme.typography.labelMedium,
-                            color = if (sandboxState.isRecording) {
+                            color = if (sandboxState.isStreaming) {
                                 MaterialTheme.colorScheme.error
                             } else {
                                 MaterialTheme.colorScheme.primary
@@ -286,16 +295,32 @@ fun KeyboardScreen(
                         onValueChange = onSandboxTextChange,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(132.dp)
+                            .height(128.dp)
                             .testTag("keyboard_sandbox_input"),
                         placeholder = {
                             Text(
-                                text = "Tap the mic below to dictate Cantonese right here, or switch to CantoScribe Voice keyboard…",
+                                text = "Hold or tap the jade mic below — Cantonese streams live right here while you talk…",
                                 style = MaterialTheme.typography.bodyMedium
                             )
                         },
                         shape = RoundedCornerShape(14.dp)
                     )
+
+                    if (sandboxState.livePartial.isNotBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "Streaming: ${sandboxState.livePartial} ▍",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontStyle = FontStyle.Italic,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                            )
+                        }
+                    }
 
                     // Cantonese quick punctuation strip
                     FlowRow(
@@ -324,7 +349,7 @@ fun KeyboardScreen(
 
                     AnimatedLevelBar(
                         level = sandboxState.liveLevel,
-                        isActive = sandboxState.isRecording
+                        isActive = sandboxState.isStreaming
                     )
 
                     Text(
@@ -333,43 +358,84 @@ fun KeyboardScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
-                    Button(
-                        onClick = {
-                            if (hasMicPermission) onToggleSandboxRecord() else onRequestMicPermission()
-                        },
-                        enabled = !sandboxState.isTranscribing,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(52.dp)
-                            .testTag("sandbox_mic_button"),
-                        shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (sandboxState.isRecording) {
-                                MaterialTheme.colorScheme.error
-                            } else {
-                                MaterialTheme.colorScheme.primary
-                            }
-                        )
-                    ) {
-                        when {
-                            sandboxState.isTranscribing -> {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(18.dp),
-                                    strokeWidth = 2.dp,
-                                    color = MaterialTheme.colorScheme.onPrimary
+                    if (!hasMicPermission) {
+                        Button(
+                            onClick = onRequestMicPermission,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(54.dp)
+                                .testTag("sandbox_mic_button"),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Icon(Icons.Filled.Mic, contentDescription = "Grant mic")
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Grant Mic for Live Dictation")
+                        }
+                    } else {
+                        val isStreaming = sandboxState.isStreaming
+                        val padBg = if (isStreaming) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        }
+                        val padFg = MaterialTheme.colorScheme.onPrimary
+
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(padBg)
+                                .pointerInput(isStreaming) {
+                                    detectTapGestures(
+                                        onPress = {
+                                            val downAt = System.currentTimeMillis()
+                                            if (isStreaming) {
+                                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                onStopSandboxLive()
+                                                tryAwaitRelease()
+                                            } else {
+                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                onStartSandboxLive(true)
+                                                val released = tryAwaitRelease()
+                                                val heldMs = System.currentTimeMillis() - downAt
+                                                if (released && heldMs < 320L) {
+                                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                    onLockSandboxHandsFree()
+                                                } else {
+                                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                    onStopSandboxLive()
+                                                }
+                                            }
+                                        }
+                                    )
+                                }
+                                .testTag("sandbox_mic_button"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = when {
+                                        isStreaming && !sandboxState.isHoldToTalk -> Icons.Filled.Stop
+                                        isStreaming -> Icons.Filled.GraphicEq
+                                        else -> Icons.Filled.Mic
+                                    },
+                                    contentDescription = "Live Cantonese mic",
+                                    tint = padFg
                                 )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Inserting Cantonese…")
-                            }
-                            sandboxState.isRecording -> {
-                                Icon(Icons.Filled.Stop, contentDescription = "Stop live dictation")
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Stop & Insert Text")
-                            }
-                            else -> {
-                                Icon(Icons.Filled.Mic, contentDescription = "Start live dictation")
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(if (hasMicPermission) "Speak to Type Cantonese" else "Grant Mic to Dictate")
+                                Text(
+                                    text = when {
+                                        isStreaming && sandboxState.isHoldToTalk -> "Live Streaming · Release When Done"
+                                        isStreaming -> "Hands-Free Live · Tap to Stop"
+                                        else -> "Hold to Speak · Tap for Hands-Free"
+                                    },
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = padFg,
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         }
                     }
@@ -459,7 +525,7 @@ fun KeyboardScreen(
                         )
                     }
                     Text(
-                        text = "Boost accuracy for names, Hong Kong places, or work jargon across both Gemini and OpenAI models.",
+                        text = "Boost accuracy for names, Hong Kong places, or work jargon across both Gemini and OpenAI live engines.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

@@ -4,6 +4,7 @@ import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.ai.LiveTranscriptionController
 import com.example.ai.TranscriptionRouter
 import com.example.audio.AudioInputHandler
 import com.example.core.AppContainer
@@ -30,17 +31,19 @@ private const val TAG = "StudioViewModel"
 
 data class SandboxState(
     val text: String = "",
-    val isRecording: Boolean = false,
-    val isTranscribing: Boolean = false,
+    val livePartial: String = "",
+    val isStreaming: Boolean = false,
+    val isHoldToTalk: Boolean = false,
     val liveLevel: Float = 0.08f,
     val elapsedMillis: Long = 0L,
-    val statusNote: String = "Tap mic to test live Cantonese keyboard dictation",
+    val statusNote: String = "Hold to speak or tap for hands-free live Cantonese",
     val lastInsertedLength: Int = 0
 )
 
 class StudioViewModel(
     private val audioHandler: AudioInputHandler = AppContainer.audioInputHandler,
     private val router: TranscriptionRouter = AppContainer.transcriptionRouter,
+    private val liveController: LiveTranscriptionController = AppContainer.liveTranscriptionController,
     private val preferencesRepo: PreferencesRepository = AppContainer.preferencesRepository,
     private val sessionStore: SessionTranscriptStore = AppContainer.sessionStore
 ) : ViewModel() {
@@ -68,9 +71,13 @@ class StudioViewModel(
     private val _snackbarMessage = MutableStateFlow<String?>(null)
     val snackbarMessage: StateFlow<String?> = _snackbarMessage.asStateFlow()
 
+    private val _autoCopyTextEvent = MutableStateFlow<String?>(null)
+    val autoCopyTextEvent: StateFlow<String?> = _autoCopyTextEvent.asStateFlow()
+
     private var lastPreparedAudio: PreparedAudio? = null
-    private var recordingMetricsJob: Job? = null
-    private var activeTranscriptionJob: Job? = null
+    private var liveCollectorJob: Job? = null
+    private var activeFileTranscriptionJob: Job? = null
+    private var studioHoldMode = false
 
     init {
         viewModelScope.launch {
@@ -84,6 +91,10 @@ class StudioViewModel(
         _snackbarMessage.value = null
     }
 
+    fun consumeAutoCopyEvent() {
+        _autoCopyTextEvent.value = null
+    }
+
     fun postToast(message: String) {
         _snackbarMessage.value = message
     }
@@ -91,6 +102,17 @@ class StudioViewModel(
     fun setRoutingMode(mode: RoutingMode) {
         viewModelScope.launch {
             preferencesRepo.setRoutingMode(mode)
+        }
+    }
+
+    fun setAutoCopyOnFinish(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesRepo.setAutoCopyOnFinish(enabled)
+            _snackbarMessage.value = if (enabled) {
+                "Auto-copy enabled: finished transcripts copy automatically"
+            } else {
+                "Auto-copy disabled"
+            }
         }
     }
 
@@ -107,8 +129,6 @@ class StudioViewModel(
             preferencesRepo.setDefaultFormat(format)
         }
 
-        // If user switched to Written or Dual and current record came from OpenAI without 書面語 yet,
-        // convert seamlessly via Gemini 3.5 Lite.
         val current = _uiState.value
         if (current is StudioUiState.Success &&
             format != CantoneseFormat.SPOKEN_CANTONESE &&
@@ -119,9 +139,107 @@ class StudioViewModel(
         }
     }
 
+    // --- Real-Time Live Studio Streaming (No Post-Recording Wait) ---
+
+    fun startStudioLive(isHoldToTalk: Boolean) {
+        if (_sandboxState.value.isStreaming) {
+            cancelSandboxLive()
+        }
+        if (_uiState.value is StudioUiState.LiveStreaming) return
+
+        studioHoldMode = isHoldToTalk
+        viewModelScope.launch {
+            val prefs = preferencesRepo.currentPreferences()
+            val started = liveController.startLiveStream(
+                scope = viewModelScope,
+                preferences = prefs,
+                sourceType = AudioSourceType.STUDIO_RECORD
+            )
+            if (started.isFailure) {
+                _uiState.value = StudioUiState.Error(
+                    message = started.exceptionOrNull()?.message ?: "Unable to start live stream.",
+                    canRetryWithAlternateEngine = prefs.routingMode == RoutingMode.OPENAI_ONLY,
+                    suggestedEngine = if (prefs.routingMode == RoutingMode.OPENAI_ONLY) RoutingMode.GEMINI_ONLY else null
+                )
+                return@launch
+            }
+
+            liveCollectorJob?.cancel()
+            liveCollectorJob = viewModelScope.launch {
+                liveController.state.collectLatest { live ->
+                    if (live.isActive) {
+                        _uiState.value = StudioUiState.LiveStreaming(
+                            confirmedText = live.confirmedText,
+                            partialText = live.partialText,
+                            engineLabel = live.engineLabel,
+                            isConnecting = live.isConnecting,
+                            isHoldToTalk = studioHoldMode,
+                            metrics = live.metrics,
+                            warningMessage = live.errorMessage
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun lockStudioHandsFree() {
+        studioHoldMode = false
+        val current = _uiState.value
+        if (current is StudioUiState.LiveStreaming) {
+            _uiState.value = current.copy(isHoldToTalk = false)
+        }
+    }
+
+    fun stopStudioLive() {
+        if (_uiState.value !is StudioUiState.LiveStreaming) return
+        viewModelScope.launch {
+            val prefs = preferencesRepo.currentPreferences()
+            val record = liveController.stopAndFinalize(saveToSession = true)
+            liveCollectorJob?.cancel()
+            liveCollectorJob = null
+
+            if (record != null) {
+                _uiState.value = StudioUiState.Success(record = record)
+
+                if (prefs.autoCopyOnFinish) {
+                    val textToCopy = if (_displayFormat.value == CantoneseFormat.WRITTEN_CHINESE &&
+                        !record.writtenChinese.isNullOrBlank()
+                    ) {
+                        record.writtenChinese
+                    } else {
+                        record.spokenCantonese
+                    }
+                    _autoCopyTextEvent.value = textToCopy
+                }
+
+                if (_displayFormat.value != CantoneseFormat.SPOKEN_CANTONESE &&
+                    record.writtenChinese.isNullOrBlank()
+                ) {
+                    convertCurrentRecordToWritten(record)
+                }
+            } else {
+                _uiState.value = StudioUiState.Idle
+                _snackbarMessage.value = "No speech captured — speak while holding or in hands-free mode"
+            }
+        }
+    }
+
+    fun cancelStudioLive() {
+        liveCollectorJob?.cancel()
+        liveCollectorJob = null
+        liveController.stopAndDiscard()
+        _uiState.value = StudioUiState.Idle
+    }
+
+    // --- WhatsApp Share & External Audio Intake ---
+
     fun handleSharedAudioUri(uri: Uri, sourceType: AudioSourceType = AudioSourceType.WHATSAPP_SHARE) {
-        activeTranscriptionJob?.cancel()
-        activeTranscriptionJob = viewModelScope.launch {
+        if (_uiState.value is StudioUiState.LiveStreaming) {
+            cancelStudioLive()
+        }
+        activeFileTranscriptionJob?.cancel()
+        activeFileTranscriptionJob = viewModelScope.launch {
             val prefs = preferencesRepo.currentPreferences()
             _uiState.value = StudioUiState.Processing(
                 stageLabel = "Streaming & sniffing audio codec…",
@@ -143,64 +261,21 @@ class StudioViewModel(
         }
     }
 
-    fun startStudioRecording() {
-        if (_sandboxState.value.isRecording) {
-            cancelSandboxRecording()
-        }
-        val started = audioHandler.startRecording(viewModelScope)
-        if (started.isFailure) {
-            _uiState.value = StudioUiState.Error(
-                message = started.exceptionOrNull()?.localizedMessage ?: "Failed to start microphone capture."
-            )
+    fun retryLastAudio(overrideMode: RoutingMode? = null) {
+        val audio = lastPreparedAudio
+        if (audio == null) {
+            if (overrideMode != null) {
+                viewModelScope.launch {
+                    preferencesRepo.setRoutingMode(overrideMode)
+                    _uiState.value = StudioUiState.Idle
+                }
+            } else {
+                _uiState.value = StudioUiState.Idle
+            }
             return
         }
-
-        recordingMetricsJob?.cancel()
-        recordingMetricsJob = viewModelScope.launch {
-            audioHandler.captureMetrics.collectLatest { metrics ->
-                _uiState.value = StudioUiState.Recording(metrics)
-            }
-        }
-    }
-
-    fun stopStudioRecordingAndTranscribe() {
-        recordingMetricsJob?.cancel()
-        recordingMetricsJob = null
-
-        activeTranscriptionJob?.cancel()
-        activeTranscriptionJob = viewModelScope.launch {
-            val prefs = preferencesRepo.currentPreferences()
-            _uiState.value = StudioUiState.Processing(
-                stageLabel = "Finalizing 16 kHz AAC payload…",
-                fileName = "Studio Recording",
-                codecLabel = "AAC 16kHz Mono",
-                sizeBytes = 0L,
-                activeEngineHint = router.resolvePlannedEngineHint(AudioSourceType.STUDIO_RECORD, prefs.routingMode)
-            )
-
-            val captured = audioHandler.stopRecording(AudioSourceType.STUDIO_RECORD)
-            val audio = captured.getOrElse { err ->
-                _uiState.value = StudioUiState.Error(
-                    message = err.message ?: "Recording failed."
-                )
-                return@launch
-            }
-
-            transcribePreparedAudio(audio, overrideMode = null)
-        }
-    }
-
-    fun cancelStudioRecording() {
-        recordingMetricsJob?.cancel()
-        recordingMetricsJob = null
-        audioHandler.cancelRecording()
-        _uiState.value = StudioUiState.Idle
-    }
-
-    fun retryLastAudio(overrideMode: RoutingMode? = null) {
-        val audio = lastPreparedAudio ?: return
-        activeTranscriptionJob?.cancel()
-        activeTranscriptionJob = viewModelScope.launch {
+        activeFileTranscriptionJob?.cancel()
+        activeFileTranscriptionJob = viewModelScope.launch {
             if (overrideMode != null) {
                 preferencesRepo.setRoutingMode(overrideMode)
             }
@@ -209,6 +284,9 @@ class StudioViewModel(
     }
 
     fun openSessionRecord(record: TranscriptRecord) {
+        if (_uiState.value is StudioUiState.LiveStreaming) {
+            cancelStudioLive()
+        }
         _uiState.value = StudioUiState.Success(record = record)
     }
 
@@ -302,6 +380,9 @@ class StudioViewModel(
 
             result.onSuccess { record ->
                 _uiState.value = StudioUiState.Success(record = record)
+                if (prefs.autoCopyOnFinish) {
+                    _autoCopyTextEvent.value = record.spokenCantonese
+                }
                 if (_displayFormat.value != CantoneseFormat.SPOKEN_CANTONESE &&
                     record.writtenChinese.isNullOrBlank()
                 ) {
@@ -329,7 +410,7 @@ class StudioViewModel(
         }
     }
 
-    // --- Live Keyboard In-App Sandbox Controls ---
+    // --- Real-Time Live Keyboard In-App Sandbox Controls ---
 
     fun updateSandboxText(newText: String) {
         _sandboxState.value = _sandboxState.value.copy(text = newText)
@@ -346,124 +427,119 @@ class StudioViewModel(
         _sandboxState.value = current.copy(
             text = current.text.dropLast(current.lastInsertedLength),
             lastInsertedLength = 0,
-            statusNote = "Undid last dictation"
+            statusNote = "Undid last live phrase"
         )
     }
 
     fun clearSandbox() {
         _sandboxState.value = _sandboxState.value.copy(
             text = "",
+            livePartial = "",
             lastInsertedLength = 0,
             statusNote = "Sandbox cleared"
         )
     }
 
-    fun toggleSandboxRecording() {
-        val current = _sandboxState.value
-        if (current.isTranscribing) return
-        if (current.isRecording) {
-            stopSandboxRecordingAndInsert()
-        } else {
-            startSandboxRecording()
+    fun startSandboxLive(isHoldToTalk: Boolean) {
+        if (_uiState.value is StudioUiState.LiveStreaming) {
+            cancelStudioLive()
         }
-    }
-
-    private fun startSandboxRecording() {
-        if (_uiState.value is StudioUiState.Recording) {
-            cancelStudioRecording()
-        }
-        val started = audioHandler.startRecording(viewModelScope)
-        if (started.isFailure) {
-            _sandboxState.value = _sandboxState.value.copy(
-                statusNote = started.exceptionOrNull()?.localizedMessage ?: "Could not access microphone"
-            )
-            return
-        }
-
-        _sandboxState.value = _sandboxState.value.copy(
-            isRecording = true,
-            statusNote = "Listening (16 kHz mono AAC)…"
-        )
-
-        recordingMetricsJob?.cancel()
-        recordingMetricsJob = viewModelScope.launch {
-            audioHandler.captureMetrics.collectLatest { metrics ->
-                _sandboxState.value = _sandboxState.value.copy(
-                    liveLevel = metrics.normalizedLevel,
-                    elapsedMillis = metrics.elapsedMillis
-                )
-            }
-        }
-    }
-
-    private fun stopSandboxRecordingAndInsert() {
-        recordingMetricsJob?.cancel()
-        recordingMetricsJob = null
-
-        _sandboxState.value = _sandboxState.value.copy(
-            isRecording = false,
-            isTranscribing = true,
-            statusNote = "Transcribing live Cantonese…"
-        )
+        if (_sandboxState.value.isStreaming) return
 
         viewModelScope.launch {
-            val captured = audioHandler.stopRecording(AudioSourceType.KEYBOARD_LIVE)
-            val audio = captured.getOrElse { err ->
+            val prefs = preferencesRepo.currentPreferences()
+            val started = liveController.startLiveStream(
+                scope = viewModelScope,
+                preferences = prefs,
+                sourceType = AudioSourceType.KEYBOARD_LIVE,
+                onPartial = { partial ->
+                    _sandboxState.value = _sandboxState.value.copy(livePartial = partial)
+                },
+                onCommitSegment = { segment ->
+                    val current = _sandboxState.value
+                    val sep = if (current.text.isNotEmpty() &&
+                        current.text.last().code < 128 &&
+                        segment.first().code < 128 &&
+                        !current.text.endsWith(" ")
+                    ) " " else ""
+                    val inserted = sep + segment
+                    _sandboxState.value = current.copy(
+                        text = current.text + inserted,
+                        livePartial = "",
+                        lastInsertedLength = inserted.length
+                    )
+                }
+            )
+
+            if (started.isFailure) {
                 _sandboxState.value = _sandboxState.value.copy(
-                    isTranscribing = false,
-                    liveLevel = 0.08f,
-                    statusNote = err.message ?: "Recording cancelled"
+                    statusNote = started.exceptionOrNull()?.message ?: "Unable to start live keyboard mic"
                 )
                 return@launch
             }
 
-            val prefs = preferencesRepo.currentPreferences()
-            val result = router.transcribe(
-                audio = audio,
-                preferences = prefs,
-                saveToSession = true
+            _sandboxState.value = _sandboxState.value.copy(
+                isStreaming = true,
+                isHoldToTalk = isHoldToTalk,
+                livePartial = "",
+                statusNote = "Streaming live Cantonese…"
             )
 
-            result.onSuccess { record ->
-                val snippet = if (prefs.defaultFormat == CantoneseFormat.WRITTEN_CHINESE &&
-                    !record.writtenChinese.isNullOrBlank()
-                ) {
-                    record.writtenChinese
-                } else {
-                    record.spokenCantonese
+            liveCollectorJob?.cancel()
+            liveCollectorJob = viewModelScope.launch {
+                liveController.state.collectLatest { live ->
+                    if (live.isActive) {
+                        _sandboxState.value = _sandboxState.value.copy(
+                            liveLevel = live.metrics.normalizedLevel,
+                            elapsedMillis = live.metrics.elapsedMillis,
+                            statusNote = live.errorMessage
+                                ?: if (live.isConnecting) "Connecting live stream…" else "LIVE · ${live.engineLabel}"
+                        )
+                    }
                 }
-                val existing = _sandboxState.value.text
-                val separator = if (existing.isNotEmpty() && !existing.endsWith(" ") && !existing.endsWith("\n")) " " else ""
-                val inserted = separator + snippet
-                _sandboxState.value = _sandboxState.value.copy(
-                    text = existing + inserted,
-                    isTranscribing = false,
-                    liveLevel = 0.08f,
-                    lastInsertedLength = inserted.length,
-                    statusNote = "${record.engineUsed.displayName} · ${record.latencyMillis}ms"
-                )
-            }.onFailure { err ->
-                _sandboxState.value = _sandboxState.value.copy(
-                    isTranscribing = false,
-                    liveLevel = 0.08f,
-                    statusNote = err.message ?: "Transcription failed"
-                )
             }
         }
     }
 
-    private fun cancelSandboxRecording() {
-        recordingMetricsJob?.cancel()
-        recordingMetricsJob = null
-        audioHandler.cancelRecording()
+    fun lockSandboxHandsFree() {
+        _sandboxState.value = _sandboxState.value.copy(isHoldToTalk = false)
+    }
+
+    fun stopSandboxLive() {
+        if (!_sandboxState.value.isStreaming) return
+        viewModelScope.launch {
+            val record = liveController.stopAndFinalize(saveToSession = true)
+            liveCollectorJob?.cancel()
+            liveCollectorJob = null
+            _sandboxState.value = _sandboxState.value.copy(
+                isStreaming = false,
+                isHoldToTalk = false,
+                livePartial = "",
+                liveLevel = 0.08f,
+                statusNote = if (record != null) {
+                    "Live stream complete · ${record.engineUsed.displayName}"
+                } else {
+                    "Hold to speak or tap for hands-free live Cantonese"
+                }
+            )
+        }
+    }
+
+    private fun cancelSandboxLive() {
+        liveCollectorJob?.cancel()
+        liveCollectorJob = null
+        liveController.stopAndDiscard()
         _sandboxState.value = _sandboxState.value.copy(
-            isRecording = false,
+            isStreaming = false,
+            isHoldToTalk = false,
+            livePartial = "",
             liveLevel = 0.08f,
             statusNote = "Cancelled"
         )
     }
 
     override fun onCleared() {
+        liveController.stopAndDiscard()
         audioHandler.cancelRecording()
         super.onCleared()
     }

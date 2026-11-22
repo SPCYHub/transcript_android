@@ -1,6 +1,7 @@
 package com.example.ime
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -11,6 +12,7 @@ import android.os.Build
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
@@ -33,22 +35,28 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 /**
- * System-wide Android Voice Keyboard (`InputMethodService`) optimized for low-latency
- * live Cantonese transcription directly into WhatsApp, Notes, Search, and any text field.
+ * System-wide Real-Time Cantonese Voice Keyboard (`InputMethodService`).
+ *
+ * - Streams live Cantonese directly into the active text box WHILE speaking using
+ *   `setComposingText` for real-time partial previews and `commitText` as each phrase completes
+ *   — never waiting until recording ends to start transcribing.
+ * - Supports BOTH effortless gestures on the central mic pad:
+ *   - **Hold to Speak**: press & hold for quick sentences, release to auto-finish.
+ *   - **Quick Tap**: tap (<300ms) to lock hands-free continuous live dictation; tap again to stop.
  */
 class CantoVoiceImeService : InputMethodService() {
 
     private val imeScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
-    private var isRecording = false
-    private var isTranscribing = false
+    private var isLiveStreaming = false
+    private var isHoldGestureLocked = false
+    private var pressDownTimestampMs = 0L
     private var routingMode = RoutingMode.AUTO
     private var formatMode = CantoneseFormat.SPOKEN_CANTONESE
     private var lastCommittedLength = 0
 
-    private var metricsJob: Job? = null
+    private var liveObserverJob: Job? = null
     private var prefsJob: Job? = null
-    private var activeTranscribeJob: Job? = null
 
     private var statusTextView: TextView? = null
     private var engineChip: TextView? = null
@@ -81,6 +89,7 @@ class CantoVoiceImeService : InputMethodService() {
         }
     }
 
+    @SuppressLint("ClickableViewAccessibility")
     override fun onCreateInputView(): View {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -99,7 +108,7 @@ class CantoVoiceImeService : InputMethodService() {
         }
 
         val statusTv = TextView(this).apply {
-            text = "CantoScribe · Ready"
+            text = "Hold or Tap · Live 粵語"
             setTextColor(colorTextMuted)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             typeface = Typeface.MONOSPACE
@@ -170,11 +179,11 @@ class CantoVoiceImeService : InputMethodService() {
         levelBar = progress
         root.addView(progress)
 
-        // Row 4: Central Voice Dictation Pad
+        // Row 4: Ergonomic Dual-Gesture Voice Pad (Hold to Speak OR Quick Tap to Lock Hands-Free)
         val micBtn = Button(this).apply {
-            text = "TAP TO SPEAK CANTONESE (粵語)"
+            text = "HOLD TO SPEAK · OR TAP FOR HANDS-FREE (粵語)"
             setTextColor(colorTextPrimary)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             isAllCaps = false
             background = roundedDrawable(colorJade, dp(16))
@@ -183,7 +192,37 @@ class CantoVoiceImeService : InputMethodService() {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 dp(64)
             ).apply { bottomMargin = dp(10) }
-            setOnClickListener { onMicButtonClicked() }
+
+            setOnTouchListener { _, event ->
+                when (event.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        pressDownTimestampMs = System.currentTimeMillis()
+                        if (!isLiveStreaming) {
+                            isHoldGestureLocked = false
+                            startLiveDictation()
+                        } else if (isHoldGestureLocked) {
+                            // Tapping again stops hands-free live mode.
+                            stopLiveDictation()
+                        }
+                        true
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        val heldMs = System.currentTimeMillis() - pressDownTimestampMs
+                        if (isLiveStreaming && !isHoldGestureLocked) {
+                            if (heldMs < 320L) {
+                                // Short tap -> lock into continuous hands-free live streaming!
+                                isHoldGestureLocked = true
+                                updateUiState()
+                            } else {
+                                // Hold-to-talk released -> finalize smoothly.
+                                stopLiveDictation()
+                            }
+                        }
+                        true
+                    }
+                    else -> false
+                }
+            }
         }
         micButton = micBtn
         root.addView(micBtn)
@@ -205,9 +244,11 @@ class CantoVoiceImeService : InputMethodService() {
             commitToHost(" ", trackAsDictation = false)
         })
         bottomRow.addView(createActionKey("⌫", weight = 1.1f) {
+            currentInputConnection?.finishComposingText()
             currentInputConnection?.deleteSurroundingText(1, 0)
         })
         bottomRow.addView(createActionKey("Send ↵", weight = 1.3f, primary = true) {
+            if (isLiveStreaming) stopLiveDictation()
             triggerEditorAction()
         })
         root.addView(bottomRow)
@@ -225,22 +266,19 @@ class CantoVoiceImeService : InputMethodService() {
 
     override fun onFinishInputView(finishingInput: Boolean) {
         super.onFinishInputView(finishingInput)
-        if (isRecording) {
-            stopAndCancelSafely()
+        if (isLiveStreaming) {
+            stopAndDiscardSafely()
         }
     }
 
     override fun onDestroy() {
-        stopAndCancelSafely()
-        activeTranscribeJob?.cancel()
+        stopAndDiscardSafely()
         prefsJob?.cancel()
         imeScope.cancel()
         super.onDestroy()
     }
 
-    private fun onMicButtonClicked() {
-        if (isTranscribing) return
-
+    private fun startLiveDictation() {
         if (!hasMicPermission()) {
             statusTextView?.text = "Mic permission required — opening CantoScribe…"
             val intent = Intent(this, MainActivity::class.java).apply {
@@ -251,85 +289,75 @@ class CantoVoiceImeService : InputMethodService() {
             return
         }
 
-        if (!isRecording) {
-            startVoiceCapture()
-        } else {
-            stopAndTranscribe()
-        }
-    }
-
-    private fun startVoiceCapture() {
-        val result = AppContainer.audioInputHandler.startRecording(imeScope)
-        if (result.isFailure) {
-            statusTextView?.text = "Mic busy: ${result.exceptionOrNull()?.localizedMessage ?: "Retry"}"
-            return
-        }
-        isRecording = true
-        updateUiState()
-
-        metricsJob?.cancel()
-        metricsJob = imeScope.launch {
-            AppContainer.audioInputHandler.captureMetrics.collectLatest { metrics ->
-                val secs = metrics.elapsedMillis / 1000.0
-                statusTextView?.text = String.format("Listening · %.1fs", secs)
-                levelBar?.progress = (metrics.normalizedLevel * 100).toInt().coerceIn(5, 100)
-            }
-        }
-    }
-
-    private fun stopAndTranscribe() {
-        isRecording = false
-        isTranscribing = true
-        metricsJob?.cancel()
-        levelBar?.progress = 50
-        updateUiState()
-
-        activeTranscribeJob?.cancel()
-        activeTranscribeJob = imeScope.launch {
-            val stopResult = AppContainer.audioInputHandler.stopRecording(AudioSourceType.KEYBOARD_LIVE)
-            val audio = stopResult.getOrNull()
-            if (audio == null) {
-                isTranscribing = false
-                statusTextView?.text = stopResult.exceptionOrNull()?.message ?: "Capture cancelled"
-                levelBar?.progress = 6
-                updateUiState()
-                return@launch
-            }
-
+        imeScope.launch {
             val prefs = AppContainer.preferencesRepository.currentPreferences().copy(
                 routingMode = routingMode,
                 defaultFormat = formatMode
             )
-            statusTextView?.text = "Transcribing (${AppContainer.transcriptionRouter.resolvePlannedEngineHint(AudioSourceType.KEYBOARD_LIVE, routingMode)})…"
 
-            val txResult = AppContainer.transcriptionRouter.transcribe(
-                audio = audio,
+            val started = AppContainer.liveTranscriptionController.startLiveStream(
+                scope = imeScope,
                 preferences = prefs,
-                saveToSession = true
+                sourceType = AudioSourceType.KEYBOARD_LIVE,
+                onPartial = { partial ->
+                    // Show real-time underlined composing Cantonese text right inside the target app!
+                    currentInputConnection?.setComposingText(partial, 1)
+                },
+                onCommitSegment = { segment ->
+                    commitToHost(segment, trackAsDictation = true)
+                }
             )
 
-            isTranscribing = false
-            levelBar?.progress = 6
-
-            txResult.onSuccess { record ->
-                val textToInsert = if (formatMode == CantoneseFormat.WRITTEN_CHINESE && !record.writtenChinese.isNullOrBlank()) {
-                    record.writtenChinese
-                } else {
-                    record.spokenCantonese
-                }
-                commitToHost(textToInsert, trackAsDictation = true)
-                statusTextView?.text = "Inserted · ${record.engineUsed.displayName} (${record.latencyMillis}ms)"
-            }.onFailure { err ->
-                statusTextView?.text = err.message?.take(64) ?: "Transcription failed"
+            if (started.isFailure) {
+                statusTextView?.text = started.exceptionOrNull()?.message?.take(60) ?: "Unable to start live mic"
+                return@launch
             }
+
+            isLiveStreaming = true
             updateUiState()
+
+            liveObserverJob?.cancel()
+            liveObserverJob = imeScope.launch {
+                AppContainer.liveTranscriptionController.state.collectLatest { state ->
+                    val secs = state.metrics.elapsedMillis / 1000.0
+                    statusTextView?.text = when {
+                        !state.errorMessage.isNullOrBlank() -> state.errorMessage.take(54)
+                        state.isConnecting -> "Connecting live stream…"
+                        else -> String.format("LIVE · %.1fs · %s", secs, state.engineLabel.substringBefore("·").trim())
+                    }
+                    levelBar?.progress = (state.metrics.normalizedLevel * 100).toInt().coerceIn(6, 100)
+                }
+            }
         }
     }
 
-    private fun stopAndCancelSafely() {
-        isRecording = false
-        metricsJob?.cancel()
-        AppContainer.audioInputHandler.cancelRecording()
+    private fun stopLiveDictation() {
+        if (!isLiveStreaming) return
+        isLiveStreaming = false
+        isHoldGestureLocked = false
+        updateUiState()
+
+        imeScope.launch {
+            currentInputConnection?.finishComposingText()
+            val record = AppContainer.liveTranscriptionController.stopAndFinalize(saveToSession = true)
+            liveObserverJob?.cancel()
+            liveObserverJob = null
+            levelBar?.progress = 6
+            statusTextView?.text = if (record != null) {
+                "Done · ${record.engineUsed.displayName}"
+            } else {
+                "Hold or Tap · Live 粵語"
+            }
+        }
+    }
+
+    private fun stopAndDiscardSafely() {
+        isLiveStreaming = false
+        isHoldGestureLocked = false
+        liveObserverJob?.cancel()
+        liveObserverJob = null
+        currentInputConnection?.finishComposingText()
+        AppContainer.liveTranscriptionController.stopAndDiscard()
         levelBar?.progress = 6
     }
 
@@ -343,9 +371,10 @@ class CantoVoiceImeService : InputMethodService() {
 
     private fun undoLastDictation() {
         if (lastCommittedLength <= 0) return
+        currentInputConnection?.finishComposingText()
         currentInputConnection?.deleteSurroundingText(lastCommittedLength, 0)
         lastCommittedLength = 0
-        statusTextView?.text = "Undid last dictation"
+        statusTextView?.text = "Undid last live phrase"
     }
 
     private fun triggerEditorAction() {
@@ -388,16 +417,16 @@ class CantoVoiceImeService : InputMethodService() {
     private fun updateUiState() {
         val btn = micButton ?: return
         when {
-            isRecording -> {
-                btn.text = "● RECORDING — TAP TO INSERT"
+            isLiveStreaming && isHoldGestureLocked -> {
+                btn.text = "● LIVE HANDS-FREE — TAP TO STOP"
                 btn.background = roundedDrawable(colorCrimson, dp(16))
             }
-            isTranscribing -> {
-                btn.text = "TRANSCRIBING CANTONESE…"
-                btn.background = roundedDrawable(colorSurface, dp(16))
+            isLiveStreaming -> {
+                btn.text = "● LIVE STREAMING — RELEASE WHEN DONE"
+                btn.background = roundedDrawable(colorCrimson, dp(16))
             }
             else -> {
-                btn.text = "TAP TO SPEAK CANTONESE (粵語)"
+                btn.text = "HOLD TO SPEAK · OR TAP FOR HANDS-FREE (粵語)"
                 btn.background = roundedDrawable(colorJade, dp(16))
             }
         }

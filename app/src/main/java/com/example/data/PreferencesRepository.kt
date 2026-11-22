@@ -27,6 +27,7 @@ class PreferencesRepository(private val appContext: Context) {
         val ROUTING_MODE = stringPreferencesKey("routing_mode")
         val DEFAULT_FORMAT = stringPreferencesKey("default_format")
         val INCLUDE_WRITTEN_AUTO = booleanPreferencesKey("include_written_auto")
+        val AUTO_COPY_ON_FINISH = booleanPreferencesKey("auto_copy_on_finish")
         val CUSTOM_GLOSSARY = stringPreferencesKey("custom_glossary")
     }
 
@@ -47,6 +48,7 @@ class PreferencesRepository(private val appContext: Context) {
                     ?.let { runCatching { CantoneseFormat.valueOf(it) }.getOrNull() }
                     ?: CantoneseFormat.SPOKEN_CANTONESE,
                 includeWrittenInAuto = prefs[Keys.INCLUDE_WRITTEN_AUTO] ?: true,
+                autoCopyOnFinish = prefs[Keys.AUTO_COPY_ON_FINISH] ?: true,
                 customGlossary = prefs[Keys.CUSTOM_GLOSSARY].orEmpty()
             )
         }
@@ -63,6 +65,10 @@ class PreferencesRepository(private val appContext: Context) {
 
     suspend fun setIncludeWrittenInAuto(include: Boolean) {
         appContext.cantoPrefsDataStore.edit { it[Keys.INCLUDE_WRITTEN_AUTO] = include }
+    }
+
+    suspend fun setAutoCopyOnFinish(enabled: Boolean) {
+        appContext.cantoPrefsDataStore.edit { it[Keys.AUTO_COPY_ON_FINISH] = enabled }
     }
 
     suspend fun setCustomGlossary(glossary: String) {

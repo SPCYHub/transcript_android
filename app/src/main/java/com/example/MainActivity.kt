@@ -78,8 +78,13 @@ enum class AppDestination(
 
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        const val EXTRA_AUTO_START_LIVE = "extra_auto_start_live"
+    }
+
     private val incomingSharedAudioUri = MutableStateFlow<Uri?>(null)
     private val openKeyboardTabFlag = MutableStateFlow(false)
+    private val autoStartLiveFlag = MutableStateFlow(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -90,7 +95,7 @@ class MainActivity : ComponentActivity() {
         // STEP 2: Initialize lightweight shared AppContainer.
         AppContainer.ensureInitialized(applicationContext)
 
-        // STEP 3: Extract any shared WhatsApp/audio intent delivered at launch.
+        // STEP 3: Extract any shared WhatsApp/audio or Quick Tile intent delivered at launch.
         extractIncomingIntent(intent)
 
         enableEdgeToEdge()
@@ -98,11 +103,14 @@ class MainActivity : ComponentActivity() {
             CantoScribeTheme {
                 val pendingUri by incomingSharedAudioUri.collectAsStateWithLifecycle()
                 val shouldOpenKeyboard by openKeyboardTabFlag.collectAsStateWithLifecycle()
+                val shouldAutoStartLive by autoStartLiveFlag.collectAsStateWithLifecycle()
                 CantoScribeRoot(
                     pendingSharedUri = pendingUri,
                     onConsumeSharedUri = { incomingSharedAudioUri.value = null },
                     shouldOpenKeyboardTab = shouldOpenKeyboard,
-                    onConsumeOpenKeyboardTab = { openKeyboardTabFlag.value = false }
+                    onConsumeOpenKeyboardTab = { openKeyboardTabFlag.value = false },
+                    shouldAutoStartLive = shouldAutoStartLive,
+                    onConsumeAutoStartLive = { autoStartLiveFlag.value = false }
                 )
             }
         }
@@ -119,6 +127,9 @@ class MainActivity : ComponentActivity() {
 
         if (intent.getBooleanExtra("request_mic_from_ime", false)) {
             openKeyboardTabFlag.value = true
+        }
+        if (intent.getBooleanExtra(EXTRA_AUTO_START_LIVE, false)) {
+            autoStartLiveFlag.value = true
         }
 
         val uri: Uri? = when (intent.action) {
@@ -158,6 +169,8 @@ private fun CantoScribeRoot(
     onConsumeSharedUri: () -> Unit,
     shouldOpenKeyboardTab: Boolean,
     onConsumeOpenKeyboardTab: () -> Unit,
+    shouldAutoStartLive: Boolean,
+    onConsumeAutoStartLive: () -> Unit,
     viewModel: StudioViewModel = viewModel()
 ) {
     val context = LocalContext.current
@@ -169,6 +182,7 @@ private fun CantoScribeRoot(
     val sessionRecords by viewModel.sessionRecords.collectAsStateWithLifecycle()
     val sandboxState by viewModel.sandboxState.collectAsStateWithLifecycle()
     val snackbarMessage by viewModel.snackbarMessage.collectAsStateWithLifecycle()
+    val autoCopyText by viewModel.autoCopyTextEvent.collectAsStateWithLifecycle()
 
     var currentDestination by remember { mutableStateOf(AppDestination.STUDIO) }
     var hasMicPermission by remember {
@@ -185,7 +199,7 @@ private fun CantoScribeRoot(
     ) { granted ->
         hasMicPermission = granted
         if (!granted) {
-            viewModel.postToast("Microphone access is required for live Cantonese voice capture.")
+            viewModel.postToast("Microphone access is required for live Cantonese streaming.")
         }
     }
 
@@ -197,6 +211,12 @@ private fun CantoScribeRoot(
             currentDestination = AppDestination.STUDIO
             viewModel.handleSharedAudioUri(uri, AudioSourceType.AUDIO_IMPORT)
         }
+    }
+
+    val copyToClipboard: (String, String) -> Unit = { text, toast ->
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        clipboard?.setPrimaryClip(ClipData.newPlainText("CantoScribe Transcript", text))
+        viewModel.postToast(toast)
     }
 
     LaunchedEffect(pendingSharedUri) {
@@ -217,6 +237,25 @@ private fun CantoScribeRoot(
         }
     }
 
+    LaunchedEffect(shouldAutoStartLive) {
+        if (shouldAutoStartLive) {
+            currentDestination = AppDestination.STUDIO
+            if (hasMicPermission) {
+                viewModel.startStudioLive(isHoldToTalk = false)
+            } else {
+                micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+            onConsumeAutoStartLive()
+        }
+    }
+
+    LaunchedEffect(autoCopyText) {
+        if (!autoCopyText.isNullOrBlank()) {
+            copyToClipboard(autoCopyText!!, "Auto-copied to clipboard")
+            viewModel.consumeAutoCopyEvent()
+        }
+    }
+
     LaunchedEffect(snackbarMessage) {
         if (!snackbarMessage.isNullOrBlank()) {
             snackbarHostState.showSnackbar(snackbarMessage!!)
@@ -227,12 +266,6 @@ private fun CantoScribeRoot(
     // Handle back navigation on secondary tabs cleanly to return to Studio.
     BackHandler(enabled = currentDestination != AppDestination.STUDIO) {
         currentDestination = AppDestination.STUDIO
-    }
-
-    val copyToClipboard: (String) -> Unit = { text ->
-        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-        clipboard?.setPrimaryClip(ClipData.newPlainText("CantoScribe Transcript", text))
-        viewModel.postToast("Copied to clipboard")
     }
 
     val shareText: (String) -> Unit = { text ->
@@ -329,14 +362,16 @@ private fun CantoScribeRoot(
                                 micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             },
                             onSelectRoutingMode = viewModel::setRoutingMode,
-                            onStartRecording = viewModel::startStudioRecording,
-                            onStopRecording = viewModel::stopStudioRecordingAndTranscribe,
-                            onCancelRecording = viewModel::cancelStudioRecording,
+                            onToggleAutoCopy = viewModel::setAutoCopyOnFinish,
+                            onStartLive = viewModel::startStudioLive,
+                            onLockHandsFree = viewModel::lockStudioHandsFree,
+                            onStopLive = viewModel::stopStudioLive,
+                            onCancelLive = viewModel::cancelStudioLive,
                             onImportAudio = {
                                 audioPickerLauncher.launch(arrayOf("audio/*", "application/ogg"))
                             },
                             onSelectFormat = viewModel::selectDisplayFormat,
-                            onCopyText = copyToClipboard,
+                            onCopyText = { copyToClipboard(it, "Copied to clipboard") },
                             onShareText = shareText,
                             onRunDeepReview = viewModel::runDeepReviewOnCurrent,
                             onRetry = viewModel::retryLastAudio
@@ -349,12 +384,14 @@ private fun CantoScribeRoot(
                             onRequestMicPermission = {
                                 micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             },
-                            onToggleSandboxRecord = viewModel::toggleSandboxRecording,
+                            onStartSandboxLive = viewModel::startSandboxLive,
+                            onLockSandboxHandsFree = viewModel::lockSandboxHandsFree,
+                            onStopSandboxLive = viewModel::stopSandboxLive,
                             onSandboxTextChange = viewModel::updateSandboxText,
                             onAppendSymbol = viewModel::appendSandboxSymbol,
                             onUndoSandbox = viewModel::undoSandboxLastDictation,
                             onClearSandbox = viewModel::clearSandbox,
-                            onCopySandbox = copyToClipboard,
+                            onCopySandbox = { copyToClipboard(it, "Copied sandbox text") },
                             onSaveGlossary = viewModel::setCustomGlossary
                         )
 
@@ -364,7 +401,7 @@ private fun CantoScribeRoot(
                                 viewModel.openSessionRecord(record)
                                 currentDestination = AppDestination.STUDIO
                             },
-                            onCopyText = copyToClipboard,
+                            onCopyText = { copyToClipboard(it, "Copied to clipboard") },
                             onDeleteRecord = viewModel::removeSessionRecord,
                             onClearAll = viewModel::clearAllSessionHistory
                         )

@@ -87,6 +87,7 @@ data class UserPreferences(
     val routingMode: RoutingMode = RoutingMode.AUTO,
     val defaultFormat: CantoneseFormat = CantoneseFormat.SPOKEN_CANTONESE,
     val includeWrittenInAuto: Boolean = true,
+    val autoCopyOnFinish: Boolean = true,
     val customGlossary: String = ""
 )
 
@@ -100,7 +101,15 @@ data class AudioCaptureMetrics(
 
 sealed interface StudioUiState {
     data object Idle : StudioUiState
-    data class Recording(val metrics: AudioCaptureMetrics) : StudioUiState
+    data class LiveStreaming(
+        val confirmedText: String,
+        val partialText: String,
+        val engineLabel: String,
+        val isConnecting: Boolean,
+        val isHoldToTalk: Boolean,
+        val metrics: AudioCaptureMetrics,
+        val warningMessage: String? = null
+    ) : StudioUiState
     data class Processing(
         val stageLabel: String,
         val fileName: String,

@@ -2,6 +2,8 @@ package com.example.core
 
 import android.content.Context
 import com.example.ai.GeminiTranscriptionEngine
+import com.example.ai.LiveTranscriptionController
+import com.example.ai.OpenAiRealtimeStreamEngine
 import com.example.ai.OpenAiTranscriptionEngine
 import com.example.ai.TranscriptionRouter
 import com.example.audio.AudioInputHandler
@@ -32,7 +34,13 @@ object AppContainer {
     lateinit var openAiEngine: OpenAiTranscriptionEngine
         private set
 
+    lateinit var openAiRealtimeEngine: OpenAiRealtimeStreamEngine
+        private set
+
     lateinit var transcriptionRouter: TranscriptionRouter
+        private set
+
+    lateinit var liveTranscriptionController: LiveTranscriptionController
         private set
 
     fun ensureInitialized(context: Context) {
@@ -45,9 +53,14 @@ object AppContainer {
             audioInputHandler = AudioInputHandler(appCtx)
             geminiEngine = GeminiTranscriptionEngine()
             openAiEngine = OpenAiTranscriptionEngine()
+            openAiRealtimeEngine = OpenAiRealtimeStreamEngine()
             transcriptionRouter = TranscriptionRouter(
                 geminiEngine = geminiEngine,
                 openAiEngine = openAiEngine,
+                sessionStore = sessionStore
+            )
+            liveTranscriptionController = LiveTranscriptionController(
+                openAiRealtime = openAiRealtimeEngine,
                 sessionStore = sessionStore
             )
             initialized = true
