@@ -48,6 +48,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -378,6 +379,10 @@ fun KeyboardScreen(
                         }
                     } else {
                         val isStreaming = sandboxState.isStreaming
+                        val latestIsStreaming by rememberUpdatedState(isStreaming)
+                        val latestOnStartSandbox by rememberUpdatedState(onStartSandboxLive)
+                        val latestOnLockSandbox by rememberUpdatedState(onLockSandboxHandsFree)
+                        val latestOnStopSandbox by rememberUpdatedState(onStopSandboxLive)
                         val padBg = if (isStreaming) {
                             MaterialTheme.colorScheme.error
                         } else {
@@ -395,25 +400,25 @@ fun KeyboardScreen(
                                 .height(58.dp)
                                 .clip(RoundedCornerShape(16.dp))
                                 .background(padBg)
-                                .pointerInput(isStreaming) {
+                                .pointerInput(Unit) {
                                     detectTapGestures(
                                         onPress = {
                                             val downAt = System.currentTimeMillis()
-                                            if (isStreaming) {
+                                            if (latestIsStreaming) {
                                                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                                onStopSandboxLive()
+                                                latestOnStopSandbox()
                                                 tryAwaitRelease()
                                             } else {
                                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                onStartSandboxLive(true)
+                                                latestOnStartSandbox(true)
                                                 val released = tryAwaitRelease()
                                                 val heldMs = System.currentTimeMillis() - downAt
                                                 if (released && heldMs < 320L) {
                                                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                                    onLockSandboxHandsFree()
+                                                    latestOnLockSandbox()
                                                 } else {
                                                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                                    onStopSandboxLive()
+                                                    latestOnStopSandbox()
                                                 }
                                             }
                                         }

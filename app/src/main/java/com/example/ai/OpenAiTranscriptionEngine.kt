@@ -2,6 +2,7 @@ package com.example.ai
 
 import android.util.Log
 import com.example.data.SecureKeyStore
+import com.example.model.AudioSourceType
 import com.example.model.PreparedAudio
 import com.example.model.TranscriptionEngineId
 import com.squareup.moshi.Json
@@ -29,8 +30,17 @@ import java.util.concurrent.TimeUnit
 private const val TAG = "OpenAiTranscriptionEngine"
 private const val OPENAI_BASE_URL = "https://api.openai.com/"
 private const val OPENAI_TIMEOUT_MS = 50_000L
-private const val PRIMARY_MODEL = "gpt-transcribe"
-private const val FALLBACK_MODEL = "gpt-4o-mini-transcribe"
+
+private data class OpenAiModelCandidate(
+    val modelId: String,
+    val engineId: TranscriptionEngineId
+)
+
+private val OPENAI_REST_MODEL_CHAIN = listOf(
+    OpenAiModelCandidate("gpt-transcribe", TranscriptionEngineId.OPENAI_GPT_TRANSCRIBE),
+    OpenAiModelCandidate("gpt-4o-transcribe", TranscriptionEngineId.OPENAI_GPT_TRANSCRIBE),
+    OpenAiModelCandidate("gpt-4o-mini-transcribe", TranscriptionEngineId.OPENAI_MINI_FALLBACK)
+)
 
 @JsonClass(generateAdapter = true)
 data class OpenAiTranscriptionResponse(
@@ -56,7 +66,8 @@ data class OpenAiAudioOutput(
 )
 
 /**
- * OpenAI Speech-to-Text engine targeting `/v1/audio/transcriptions`.
+ * OpenAI Speech-to-Text engine targeting `/v1/audio/transcriptions` with automatic
+ * model fallback (`gpt-transcribe` -> `gpt-4o-transcribe` -> `gpt-4o-mini-transcribe`).
  * Resolves the user's personal key from [SecureKeyStore] first, falling back to BuildConfig.
  */
 class OpenAiTranscriptionEngine(
@@ -65,6 +76,9 @@ class OpenAiTranscriptionEngine(
 
     val isConfigured: Boolean
         get() = keyStore.hasEffectiveOpenAiKey()
+
+    @Volatile
+    private var preferredModelIndex = 0
 
     private val api: OpenAiAudioApi by lazy {
         val client = OkHttpClient.Builder()
@@ -89,7 +103,8 @@ class OpenAiTranscriptionEngine(
     suspend fun transcribe(
         audio: PreparedAudio,
         customGlossary: String,
-        preferWritten: Boolean = false
+        preferWritten: Boolean = false,
+        promptOverride: String? = null
     ): Result<OpenAiAudioOutput> {
         val effectiveKey = keyStore.resolveEffectiveOpenAiKey()
         if (effectiveKey.isNullOrBlank()) {
@@ -101,43 +116,47 @@ class OpenAiTranscriptionEngine(
         }
 
         val startedAt = System.currentTimeMillis()
-        val prompt = CantonesePrompts.buildOpenAiPrompt(
+        val prompt = promptOverride ?: CantonesePrompts.buildOpenAiPrompt(
             customGlossary = customGlossary,
             preferWritten = preferWritten
         )
 
         return try {
             withTimeout(OPENAI_TIMEOUT_MS) {
-                val primaryResult = executeRequest(
-                    apiKey = effectiveKey,
-                    modelId = PRIMARY_MODEL,
-                    engineId = TranscriptionEngineId.OPENAI_GPT_TRANSCRIBE,
-                    audio = audio,
-                    prompt = prompt,
-                    startedAt = startedAt
-                )
-                if (primaryResult.isSuccess) {
-                    return@withTimeout primaryResult
-                }
+                val startIndex = preferredModelIndex.coerceIn(0, OPENAI_REST_MODEL_CHAIN.lastIndex)
+                var lastFailure: Result<OpenAiAudioOutput>? = null
 
-                val errMsg = primaryResult.exceptionOrNull()?.message.orEmpty()
-                val shouldTryFallback = errMsg.contains("model", ignoreCase = true) ||
-                    errMsg.contains("404") ||
-                    errMsg.contains("does not exist", ignoreCase = true)
-
-                if (shouldTryFallback) {
-                    Log.w(TAG, "Primary model $PRIMARY_MODEL unavailable ($errMsg); retrying with $FALLBACK_MODEL")
-                    executeRequest(
+                for (idx in startIndex until OPENAI_REST_MODEL_CHAIN.size) {
+                    val candidate = OPENAI_REST_MODEL_CHAIN[idx]
+                    val attempt = executeRequest(
                         apiKey = effectiveKey,
-                        modelId = FALLBACK_MODEL,
-                        engineId = TranscriptionEngineId.OPENAI_MINI_FALLBACK,
+                        modelId = candidate.modelId,
+                        engineId = candidate.engineId,
                         audio = audio,
                         prompt = prompt,
                         startedAt = startedAt
                     )
-                } else {
-                    primaryResult
+                    if (attempt.isSuccess) {
+                        preferredModelIndex = idx
+                        return@withTimeout attempt
+                    }
+
+                    lastFailure = attempt
+                    val errMsg = attempt.exceptionOrNull()?.message.orEmpty()
+                    val shouldTryNext = errMsg.contains("model", ignoreCase = true) ||
+                        errMsg.contains("404") ||
+                        errMsg.contains("400") ||
+                        errMsg.contains("does not exist", ignoreCase = true) ||
+                        errMsg.contains("not found", ignoreCase = true) ||
+                        errMsg.contains("unsupported", ignoreCase = true)
+
+                    if (!shouldTryNext) {
+                        return@withTimeout attempt
+                    }
+                    Log.w(TAG, "OpenAI model ${candidate.modelId} unavailable ($errMsg); trying next model.")
                 }
+
+                lastFailure ?: Result.failure(IllegalStateException("OpenAI transcription failed."))
             }
         } catch (e: TimeoutCancellationException) {
             Log.e(TAG, "OpenAI transcription timed out", e)
@@ -150,6 +169,45 @@ class OpenAiTranscriptionEngine(
             Log.e(TAG, "OpenAI transcription request failed", e)
             Result.failure(e)
         }
+    }
+
+    /**
+     * Convenience helper for live chunked WAV fallback transcription via OpenAI REST API.
+     */
+    suspend fun transcribeWavChunk(
+        wavBytes: ByteArray,
+        customGlossary: String,
+        preferWritten: Boolean,
+        contextTail: String = ""
+    ): Result<OpenAiAudioOutput> {
+        val basePrompt = CantonesePrompts.buildOpenAiPrompt(
+            customGlossary = customGlossary,
+            preferWritten = preferWritten
+        )
+        val prompt = if (contextTail.isNotBlank()) {
+            "$basePrompt 上文：$contextTail"
+        } else {
+            basePrompt
+        }
+        val audio = PreparedAudio(
+            bytes = wavBytes,
+            fileName = "live_chunk.wav",
+            geminiMimeType = "audio/wav",
+            openAiFileName = "live_chunk.wav",
+            openAiMimeType = "audio/wav",
+            durationMillis = 0L,
+            sizeBytes = wavBytes.size.toLong(),
+            sha256 = "",
+            sourceType = AudioSourceType.STUDIO_RECORD,
+            codecLabel = "WAV PCM16",
+            hadSpeechActivity = true
+        )
+        return transcribe(
+            audio = audio,
+            customGlossary = customGlossary,
+            preferWritten = preferWritten,
+            promptOverride = prompt
+        )
     }
 
     private suspend fun executeRequest(

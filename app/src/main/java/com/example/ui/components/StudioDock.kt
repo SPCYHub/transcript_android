@@ -38,6 +38,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,6 +75,12 @@ fun StudioThumbZoneDock(
     val isLive = liveState != null
     val isProcessing = uiState is StudioUiState.Processing
     var isPressed by remember { mutableStateOf(false) }
+
+    val latestIsLive by rememberUpdatedState(isLive)
+    val latestIsProcessing by rememberUpdatedState(isProcessing)
+    val latestOnStartLive by rememberUpdatedState(onStartLive)
+    val latestOnLockHandsFree by rememberUpdatedState(onLockHandsFree)
+    val latestOnStopLive by rememberUpdatedState(onStopLive)
 
     val padScale by animateFloatAsState(
         targetValue = if (isPressed) 0.97f else 1f,
@@ -210,28 +217,28 @@ fun StudioThumbZoneDock(
                             .scale(padScale)
                             .clip(RoundedCornerShape(18.dp))
                             .background(primaryBrush)
-                            .pointerInput(isLive, isProcessing) {
-                                if (isProcessing) return@pointerInput
+                            .pointerInput(Unit) {
                                 detectTapGestures(
                                     onPress = {
+                                        if (latestIsProcessing) return@detectTapGestures
                                         isPressed = true
                                         val downAt = System.currentTimeMillis()
                                         try {
-                                            if (isLive) {
+                                            if (latestIsLive) {
                                                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                                onStopLive()
+                                                latestOnStopLive()
                                                 tryAwaitRelease()
                                             } else {
                                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                onStartLive(true)
+                                                latestOnStartLive(true)
                                                 val released = tryAwaitRelease()
                                                 val heldMs = System.currentTimeMillis() - downAt
                                                 if (released && heldMs < 320L) {
                                                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                                    onLockHandsFree()
+                                                    latestOnLockHandsFree()
                                                 } else {
                                                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                                    onStopLive()
+                                                    latestOnStopLive()
                                                 }
                                             }
                                         } finally {

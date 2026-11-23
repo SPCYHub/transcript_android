@@ -28,6 +28,8 @@ enum class ThemePreference(val label: String) {
 }
 
 enum class TranscriptionEngineId(val displayName: String, val modelTag: String) {
+    GEMINI_LIVE("Gemini 3.5 Transcribe Live", "gemini-3.5-transcribe-live"),
+    GEMINI_DIRECT_LIVE("Gemini Direct Live", "gemini-3.5-transcribe-live"),
     GEMINI_FLASH("Gemini 3.8 Flash", "gemini-3.8-flash"),
     GEMINI_FLASH_LITE("Gemini 3.5 Lite", "gemini-3.5-flash-lite"),
     GEMINI_DIRECT_FLASH("Gemini Direct", "gemini-3.8-flash"),
@@ -150,6 +152,7 @@ sealed interface StudioUiState {
         val isConnecting: Boolean,
         val isHoldToTalk: Boolean,
         val metrics: AudioCaptureMetrics,
+        val isTranscribingChunk: Boolean = false,
         val warningMessage: String? = null
     ) : StudioUiState
     data class Processing(

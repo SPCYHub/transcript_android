@@ -2,6 +2,7 @@ package com.example.core
 
 import android.content.Context
 import com.example.ai.DirectGeminiRestClient
+import com.example.ai.GeminiLiveStreamEngine
 import com.example.ai.GeminiTranscriptionEngine
 import com.example.ai.LiveTranscriptionController
 import com.example.ai.OpenAiRealtimeStreamEngine
@@ -39,6 +40,9 @@ object AppContainer {
     lateinit var geminiEngine: GeminiTranscriptionEngine
         private set
 
+    lateinit var geminiLiveEngine: GeminiLiveStreamEngine
+        private set
+
     lateinit var openAiEngine: OpenAiTranscriptionEngine
         private set
 
@@ -65,6 +69,7 @@ object AppContainer {
                 keyStore = secureKeyStore,
                 directRestClient = directGeminiRestClient
             )
+            geminiLiveEngine = GeminiLiveStreamEngine(keyStore = secureKeyStore)
             openAiEngine = OpenAiTranscriptionEngine(keyStore = secureKeyStore)
             openAiRealtimeEngine = OpenAiRealtimeStreamEngine(keyStore = secureKeyStore)
             transcriptionRouter = TranscriptionRouter(
@@ -75,7 +80,9 @@ object AppContainer {
             liveTranscriptionController = LiveTranscriptionController(
                 keyStore = secureKeyStore,
                 directGeminiRest = directGeminiRestClient,
+                geminiLive = geminiLiveEngine,
                 openAiRealtime = openAiRealtimeEngine,
+                openAiRest = openAiEngine,
                 sessionStore = sessionStore
             )
             initialized = true

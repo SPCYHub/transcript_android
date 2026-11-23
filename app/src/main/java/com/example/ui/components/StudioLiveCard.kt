@@ -152,10 +152,20 @@ fun LiveStreamingCanvasCard(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         if (!hasAnyText) {
+                            val liveHint = when {
+                                state.isConnecting -> "Connecting to live transcription engine… ▍"
+                                state.isTranscribingChunk -> "Hearing Cantonese · streaming words live… ▍"
+                                state.metrics.speechFrames > 0 -> "Speech detected · streaming shortly… ▍"
+                                else -> "講廣東話啦… Words stream live as you speak ▍"
+                            }
                             Text(
-                                text = "講廣東話啦… Words appear live as you speak ▍",
+                                text = liveHint,
                                 style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = if (state.isTranscribingChunk || state.metrics.speechFrames > 0) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
                             )
                         } else {
                             val primaryColor = MaterialTheme.colorScheme.primary

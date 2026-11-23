@@ -22,6 +22,7 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.core.content.ContextCompat
 import com.example.MainActivity
+import com.example.ai.LiveFinalizeResult
 import com.example.core.AppContainer
 import com.example.model.AudioSourceType
 import com.example.model.CantoneseFormat
@@ -339,14 +340,15 @@ class CantoVoiceImeService : InputMethodService() {
 
         imeScope.launch {
             currentInputConnection?.finishComposingText()
-            val record = AppContainer.liveTranscriptionController.stopAndFinalize(saveToSession = true)
+            statusTextView?.text = "Finalizing…"
+            val result = AppContainer.liveTranscriptionController.stopAndFinalize(saveToSession = true)
             liveObserverJob?.cancel()
             liveObserverJob = null
             levelBar?.progress = 6
-            statusTextView?.text = if (record != null) {
-                "Done · ${record.engineUsed.displayName}"
-            } else {
-                "Hold or Tap · Live 粵語"
+            statusTextView?.text = when (result) {
+                is LiveFinalizeResult.Success -> "Done · ${result.record.engineUsed.displayName}"
+                is LiveFinalizeResult.Error -> result.message.take(54)
+                LiveFinalizeResult.Empty -> "Hold or Tap · Live 粵語"
             }
         }
     }

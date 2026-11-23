@@ -32,8 +32,8 @@ data class PcmAudioChunk(
  * Low-latency, zero-disk-I/O live PCM16 audio capture engine built on Android [AudioRecord].
  *
  * Streams ~100ms mono PCM16 frames directly to real-time transcription pipelines
- * (OpenAI Realtime WebSocket at 24 kHz or Gemini Live VAD streaming at 16 kHz)
- * while computing logarithmic VU waveform bars and real-time VAD speech activity.
+ * (OpenAI Realtime WebSocket at 24 kHz or Gemini / OpenAI chunked live streaming at 16 kHz)
+ * while computing logarithmic VU waveform bars and adaptive noise-floor VAD.
  */
 class LivePcmStreamRecorder {
 
@@ -41,7 +41,11 @@ class LivePcmStreamRecorder {
         const val SAMPLE_RATE_GEMINI_HZ = 16_000
         const val SAMPLE_RATE_OPENAI_REALTIME_HZ = 24_000
         private const val CHUNK_DURATION_MS = 100
-        private const val VAD_RMS_THRESHOLD = 420
+        private const val MIN_VAD_RMS_THRESHOLD = 115
+        private const val INITIAL_NOISE_FLOOR = 65.0
+        private const val MAX_NOISE_FLOOR = 240.0
+        private const val NOISE_MULTIPLIER = 1.8
+        private const val HANGOVER_FRAMES = 2
         private const val MAX_WAVEFORM_BARS = 44
     }
 
@@ -69,7 +73,9 @@ class LivePcmStreamRecorder {
                 AudioFormat.ENCODING_PCM_16BIT
             )
             if (minBuffer <= 0) {
-                return Result.failure(IllegalStateException("Device microphone does not support ${sampleRateHz}Hz PCM16 capture."))
+                return Result.failure(
+                    IllegalStateException("Device microphone does not support ${sampleRateHz}Hz PCM16 capture.")
+                )
             }
 
             // 100ms PCM16 mono frame size (2 bytes per sample).
@@ -93,6 +99,8 @@ class LivePcmStreamRecorder {
                 val rolling = ArrayDeque<Float>(MAX_WAVEFORM_BARS)
                 repeat(MAX_WAVEFORM_BARS) { rolling.addLast(0.08f) }
                 var totalSpeechFrames = 0
+                var noiseFloor = INITIAL_NOISE_FLOOR
+                var hangoverRemaining = 0
 
                 try {
                     while (isActive && isStreaming) {
@@ -106,7 +114,23 @@ class LivePcmStreamRecorder {
                         }
 
                         val rms = computePcm16Rms(slice)
-                        val isSpeech = rms >= VAD_RMS_THRESHOLD
+                        val adaptiveThreshold = maxOf(
+                            MIN_VAD_RMS_THRESHOLD,
+                            (noiseFloor * NOISE_MULTIPLIER).toInt()
+                        )
+                        val rawSpeech = rms >= adaptiveThreshold
+                        val isSpeech = if (rawSpeech) {
+                            hangoverRemaining = HANGOVER_FRAMES
+                            true
+                        } else if (hangoverRemaining > 0) {
+                            hangoverRemaining--
+                            true
+                        } else {
+                            // Gently track ambient noise floor when silent so quiet speech still triggers.
+                            noiseFloor = (noiseFloor * 0.92 + rms * 0.08)
+                                .coerceIn(35.0, MAX_NOISE_FLOOR)
+                            false
+                        }
                         if (isSpeech) totalSpeechFrames++
 
                         val normalized = if (rms <= 40) {
@@ -175,20 +199,22 @@ class LivePcmStreamRecorder {
 
     @SuppressLint("MissingPermission")
     private fun createRecorder(sampleRateHz: Int, bufferSize: Int): AudioRecord {
+        // Prefer standard MIC first for consistent gain across devices/emulators;
+        // fall back to VOICE_RECOGNITION if MIC initialization fails.
         return try {
-            val vr = AudioRecord(
-                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+            val mic = AudioRecord(
+                MediaRecorder.AudioSource.MIC,
                 sampleRateHz,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT,
                 bufferSize
             )
-            if (vr.state == AudioRecord.STATE_INITIALIZED) {
-                vr
+            if (mic.state == AudioRecord.STATE_INITIALIZED) {
+                mic
             } else {
-                vr.release()
+                mic.release()
                 AudioRecord(
-                    MediaRecorder.AudioSource.MIC,
+                    MediaRecorder.AudioSource.VOICE_RECOGNITION,
                     sampleRateHz,
                     AudioFormat.CHANNEL_IN_MONO,
                     AudioFormat.ENCODING_PCM_16BIT,
@@ -197,7 +223,7 @@ class LivePcmStreamRecorder {
             }
         } catch (_: Exception) {
             AudioRecord(
-                MediaRecorder.AudioSource.MIC,
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
                 sampleRateHz,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT,

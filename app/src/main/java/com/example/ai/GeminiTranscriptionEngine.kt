@@ -54,9 +54,29 @@ class GeminiTranscriptionEngine(
         )
     }
 
+    private val liteAudioJsonModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = DEFAULT_FAST_MODEL,
+            generationConfig = generationConfig {
+                temperature = 0.1f
+                responseMimeType = "application/json"
+                responseSchema = CantonesePrompts.audioTranscriptSchema
+            }
+        )
+    }
+
     private val fastDictationModel by lazy {
         Firebase.ai.generativeModel(
             modelName = DEFAULT_FAST_MODEL,
+            generationConfig = generationConfig {
+                temperature = 0.1f
+            }
+        )
+    }
+
+    private val flashDictationFallbackModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = DEFAULT_FLASH_MODEL,
             generationConfig = generationConfig {
                 temperature = 0.1f
             }
@@ -99,12 +119,23 @@ class GeminiTranscriptionEngine(
 
         return try {
             val response = withTimeout(INFERENCE_TIMEOUT_MS) {
-                flashAudioModel.generateContent(
-                    content("user") {
-                        inlineData(audio.bytes, audio.geminiMimeType)
-                        text(promptText)
-                    }
-                )
+                try {
+                    flashAudioModel.generateContent(
+                        content("user") {
+                            inlineData(audio.bytes, audio.geminiMimeType)
+                            text(promptText)
+                        }
+                    )
+                } catch (primaryErr: Exception) {
+                    if (primaryErr is CancellationException) throw primaryErr
+                    Log.w(TAG, "Primary $DEFAULT_FLASH_MODEL failed; falling back to $DEFAULT_FAST_MODEL", primaryErr)
+                    liteAudioJsonModel.generateContent(
+                        content("user") {
+                            inlineData(audio.bytes, audio.geminiMimeType)
+                            text(promptText)
+                        }
+                    )
+                }
             }
             parseFullAudioResponse(
                 rawJson = response.text?.trim(),
@@ -135,19 +166,31 @@ class GeminiTranscriptionEngine(
 
         val directKey = keyStore.resolveDirectGeminiKey()
         if (directKey != null) {
-            val modelName = keyStore.resolveCustomGeminiModel() ?: DEFAULT_FAST_MODEL
+            val candidates = buildList {
+                keyStore.resolveCustomGeminiModel()?.let { add(it) }
+                add(DEFAULT_FAST_MODEL)
+                add(DEFAULT_FLASH_MODEL)
+            }.distinct()
             return try {
-                val restResult = withTimeout(INFERENCE_TIMEOUT_MS) {
-                    directRestClient.generateContent(
-                        apiKey = directKey,
-                        modelName = modelName,
-                        promptText = promptText,
-                        audioBytes = audio.bytes,
-                        audioMimeType = audio.geminiMimeType,
-                        temperature = 0.1f
-                    )
+                var lastResult: Result<String>? = null
+                for (modelName in candidates) {
+                    val attempt = withTimeout(INFERENCE_TIMEOUT_MS) {
+                        directRestClient.generateContent(
+                            apiKey = directKey,
+                            modelName = modelName,
+                            promptText = promptText,
+                            audioBytes = audio.bytes,
+                            audioMimeType = audio.geminiMimeType,
+                            temperature = 0.1f
+                        )
+                    }
+                    if (attempt.isSuccess && !attempt.getOrNull()?.trim().isNullOrEmpty()) {
+                        lastResult = attempt
+                        break
+                    }
+                    lastResult = attempt
                 }
-                restResult.map { raw ->
+                (lastResult ?: Result.failure(IllegalStateException("Gemini Direct dictation failed."))).map { raw ->
                     val text = raw.trim()
                     GeminiAudioOutput(
                         spokenCantonese = text,
@@ -168,12 +211,23 @@ class GeminiTranscriptionEngine(
 
         return try {
             val response = withTimeout(INFERENCE_TIMEOUT_MS) {
-                fastDictationModel.generateContent(
-                    content("user") {
-                        inlineData(audio.bytes, audio.geminiMimeType)
-                        text(promptText)
-                    }
-                )
+                try {
+                    fastDictationModel.generateContent(
+                        content("user") {
+                            inlineData(audio.bytes, audio.geminiMimeType)
+                            text(promptText)
+                        }
+                    )
+                } catch (primaryErr: Exception) {
+                    if (primaryErr is CancellationException) throw primaryErr
+                    Log.w(TAG, "Fast dictation $DEFAULT_FAST_MODEL failed; retrying with $DEFAULT_FLASH_MODEL", primaryErr)
+                    flashDictationFallbackModel.generateContent(
+                        content("user") {
+                            inlineData(audio.bytes, audio.geminiMimeType)
+                            text(promptText)
+                        }
+                    )
+                }
             }
             val text = response.text?.trim().orEmpty()
             if (text.isEmpty()) {
@@ -307,20 +361,32 @@ class GeminiTranscriptionEngine(
         promptText: String,
         startedAt: Long
     ): Result<GeminiAudioOutput> {
-        val primaryModel = keyStore.resolveCustomGeminiModel() ?: DEFAULT_FLASH_MODEL
+        val candidates = buildList {
+            keyStore.resolveCustomGeminiModel()?.let { add(it) }
+            add(DEFAULT_FLASH_MODEL)
+            add(DEFAULT_FAST_MODEL)
+        }.distinct()
         return try {
-            val restResult = withTimeout(INFERENCE_TIMEOUT_MS) {
-                directRestClient.generateContent(
-                    apiKey = apiKey,
-                    modelName = primaryModel,
-                    promptText = promptText,
-                    audioBytes = audio.bytes,
-                    audioMimeType = audio.geminiMimeType,
-                    temperature = 0.1f,
-                    responseJsonSchema = DirectGeminiRestClient.audioTranscriptRestSchema()
-                )
+            var lastResult: Result<String>? = null
+            for (modelName in candidates) {
+                val attempt = withTimeout(INFERENCE_TIMEOUT_MS) {
+                    directRestClient.generateContent(
+                        apiKey = apiKey,
+                        modelName = modelName,
+                        promptText = promptText,
+                        audioBytes = audio.bytes,
+                        audioMimeType = audio.geminiMimeType,
+                        temperature = 0.1f,
+                        responseJsonSchema = DirectGeminiRestClient.audioTranscriptRestSchema()
+                    )
+                }
+                if (attempt.isSuccess) {
+                    lastResult = attempt
+                    break
+                }
+                lastResult = attempt
             }
-            restResult.fold(
+            (lastResult ?: Result.failure(IllegalStateException("Gemini Direct transcription failed."))).fold(
                 onSuccess = { raw ->
                     parseFullAudioResponse(
                         rawJson = raw.trim(),
