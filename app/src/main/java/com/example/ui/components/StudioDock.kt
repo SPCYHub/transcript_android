@@ -45,12 +45,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.core.LocalStudioHaptics
 import com.example.model.CantoneseFormat
 import com.example.model.StudioUiState
 
@@ -70,7 +69,7 @@ fun StudioThumbZoneDock(
     onToggleAutoCopy: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val haptic = LocalHapticFeedback.current
+    val haptics = LocalStudioHaptics.current
     val liveState = uiState as? StudioUiState.LiveStreaming
     val isLive = liveState != null
     val isProcessing = uiState is StudioUiState.Processing
@@ -118,14 +117,20 @@ fun StudioThumbZoneDock(
                 DockQuickChip(
                     label = if (displayFormat == CantoneseFormat.WRITTEN_CHINESE) "書面語" else "口語",
                     active = true,
-                    onClick = onToggleFormat,
+                    onClick = {
+                        haptics.tick()
+                        onToggleFormat()
+                    },
                     modifier = Modifier.testTag("dock_format_chip")
                 )
                 DockQuickChip(
                     label = if (autoCopyEnabled) "Auto-Copy" else "Manual Copy",
                     active = autoCopyEnabled,
                     showCheck = autoCopyEnabled,
-                    onClick = onToggleAutoCopy,
+                    onClick = {
+                        haptics.toggle(!autoCopyEnabled)
+                        onToggleAutoCopy()
+                    },
                     modifier = Modifier.testTag("dock_autocopy_chip")
                 )
                 Spacer(modifier = Modifier.weight(1f))
@@ -136,7 +141,10 @@ fun StudioThumbZoneDock(
                     modifier = Modifier
                         .minimumInteractiveComponentSize()
                         .clip(RoundedCornerShape(12.dp))
-                        .clickable(enabled = !isProcessing && !isLive, onClick = onImportAudio)
+                        .clickable(enabled = !isProcessing && !isLive) {
+                            haptics.tick()
+                            onImportAudio()
+                        }
                         .testTag("import_audio_button")
                 ) {
                     Row(
@@ -167,7 +175,10 @@ fun StudioThumbZoneDock(
             ) {
                 if (!hasMicPermission) {
                     Button(
-                        onClick = onRequestMicPermission,
+                        onClick = {
+                            haptics.tick()
+                            onRequestMicPermission()
+                        },
                         modifier = Modifier
                             .weight(1f)
                             .height(60.dp)
@@ -225,19 +236,19 @@ fun StudioThumbZoneDock(
                                         val downAt = System.currentTimeMillis()
                                         try {
                                             if (latestIsLive) {
-                                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                haptics.recordStop()
                                                 latestOnStopLive()
                                                 tryAwaitRelease()
                                             } else {
-                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                haptics.recordStart()
                                                 latestOnStartLive(true)
                                                 val released = tryAwaitRelease()
                                                 val heldMs = System.currentTimeMillis() - downAt
                                                 if (released && heldMs < 320L) {
-                                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                    haptics.handsFreeLock()
                                                     latestOnLockHandsFree()
                                                 } else {
-                                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                    haptics.recordStop()
                                                     latestOnStopLive()
                                                 }
                                             }
@@ -304,7 +315,10 @@ fun StudioThumbZoneDock(
                         color = MaterialTheme.colorScheme.surfaceContainerHigh
                     ) {
                         IconButton(
-                            onClick = onCancelLive,
+                            onClick = {
+                                haptics.error()
+                                onCancelLive()
+                            },
                             modifier = Modifier
                                 .size(64.dp)
                                 .testTag("cancel_record_button")

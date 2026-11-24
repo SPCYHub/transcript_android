@@ -4,15 +4,12 @@ import android.content.Context
 import android.content.Intent
 import android.provider.Settings
 import android.view.inputmethod.InputMethodManager
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -23,23 +20,23 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Keyboard
-import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Vibration
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
@@ -48,15 +45,11 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -64,42 +57,52 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.core.LocalStudioHaptics
+import com.example.model.CantoneseFormat
+import com.example.model.RoutingMode
 import com.example.model.UserPreferences
-import com.example.ui.components.AnimatedLevelBar
-import com.example.ui.components.formatDurationMs
+import com.example.ui.components.VoiceKeyboardDeck
 import com.example.viewmodel.SandboxState
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun KeyboardScreen(
     sandboxState: SandboxState,
     preferences: UserPreferences,
     hasMicPermission: Boolean,
     onRequestMicPermission: () -> Unit,
+    onSelectRoutingMode: (RoutingMode) -> Unit,
+    onSelectFormat: (CantoneseFormat) -> Unit,
     onStartSandboxLive: (isHoldToTalk: Boolean) -> Unit,
     onLockSandboxHandsFree: () -> Unit,
     onStopSandboxLive: () -> Unit,
+    onCancelSandboxLive: () -> Unit,
     onSandboxTextChange: (String) -> Unit,
     onAppendSymbol: (String) -> Unit,
+    onBackspaceSandbox: () -> Unit,
     onUndoSandbox: () -> Unit,
     onClearSandbox: () -> Unit,
     onCopySandbox: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val haptic = LocalHapticFeedback.current
+    val haptics = LocalStudioHaptics.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    var isImeEnabled by remember { mutableStateOf(checkImeEnabled(context)) }
+    var imeStatus by remember { mutableStateOf(inspectImeStatus(context)) }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                isImeEnabled = checkImeEnabled(context)
+                imeStatus = inspectImeStatus(context)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val openImePicker: () -> Unit = {
+        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        imm?.showInputMethodPicker()
     }
 
     Column(
@@ -113,23 +116,67 @@ fun KeyboardScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .widthIn(max = 640.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(
-                    text = "SYSTEM VOICE KEYBOARD",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "Cantonese Voice IME",
-                    style = MaterialTheme.typography.headlineMedium,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
+            // Header row with tactile haptics indicator badge
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        text = "SYSTEM VOICE KEYBOARD",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Cantonese Voice IME",
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (preferences.hapticsEnabled) {
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainer
+                    },
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Vibration,
+                            contentDescription = null,
+                            tint = if (preferences.hapticsEnabled) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            text = if (preferences.hapticsEnabled) "Haptics On" else "Haptics Off",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (preferences.hapticsEnabled) {
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
             }
 
-            // Compact 2-step system keyboard activation card
+            // 2-Step Activation Card with Live Enabled / Active Detection
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(24.dp),
@@ -138,7 +185,7 @@ fun KeyboardScreen(
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
                 Column(
-                    modifier = Modifier.padding(18.dp),
+                    modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Row(
@@ -148,22 +195,44 @@ fun KeyboardScreen(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Icon(
-                                imageVector = Icons.Filled.Keyboard,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                text = "Type in Any App",
-                                style = MaterialTheme.typography.titleMedium
-                            )
+                            Box(
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Keyboard,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            Column {
+                                Text(
+                                    text = "Type in Any App",
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                                Text(
+                                    text = "WhatsApp, Notes, Signal, Chrome",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
 
+                        val statusLabel = when {
+                            imeStatus.isActiveDefault -> "Active"
+                            imeStatus.isEnabled -> "Enabled"
+                            else -> "Setup"
+                        }
+                        val statusHighlighted = imeStatus.isEnabled || imeStatus.isActiveDefault
                         Surface(
                             shape = RoundedCornerShape(10.dp),
-                            color = if (isImeEnabled) {
+                            color = if (statusHighlighted) {
                                 MaterialTheme.colorScheme.primaryContainer
                             } else {
                                 MaterialTheme.colorScheme.surfaceContainer
@@ -174,7 +243,7 @@ fun KeyboardScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                if (isImeEnabled) {
+                                if (statusHighlighted) {
                                     Icon(
                                         imageVector = Icons.Filled.CheckCircle,
                                         contentDescription = null,
@@ -183,9 +252,10 @@ fun KeyboardScreen(
                                     )
                                 }
                                 Text(
-                                    text = if (isImeEnabled) "Enabled" else "Setup Needed",
+                                    text = statusLabel,
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = if (isImeEnabled) {
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (statusHighlighted) {
                                         MaterialTheme.colorScheme.onPrimaryContainer
                                     } else {
                                         MaterialTheme.colorScheme.onSurfaceVariant
@@ -195,18 +265,13 @@ fun KeyboardScreen(
                         }
                     }
 
-                    Text(
-                        text = "Dictate live Hong Kong Cantonese directly inside WhatsApp, Notes, or Chrome.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Button(
                             onClick = {
+                                haptics.tick()
                                 val intent = Intent(Settings.ACTION_INPUT_METHOD_SETTINGS).apply {
                                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                 }
@@ -221,7 +286,7 @@ fun KeyboardScreen(
                             Icon(
                                 imageVector = Icons.Filled.Settings,
                                 contentDescription = null,
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(17.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("1. Enable")
@@ -229,8 +294,8 @@ fun KeyboardScreen(
 
                         OutlinedButton(
                             onClick = {
-                                val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-                                imm?.showInputMethodPicker()
+                                haptics.tick()
+                                openImePicker()
                             },
                             modifier = Modifier
                                 .weight(1f)
@@ -241,7 +306,7 @@ fun KeyboardScreen(
                             Icon(
                                 imageVector = Icons.Filled.Keyboard,
                                 contentDescription = null,
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(17.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("2. Switch")
@@ -250,7 +315,7 @@ fun KeyboardScreen(
                 }
             }
 
-            // Interactive Live Dictation Sandbox
+            // Editorial Live Dictation Composer Card
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(24.dp),
@@ -259,41 +324,37 @@ fun KeyboardScreen(
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
                 Column(
-                    modifier = Modifier.padding(18.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "Live Dictation Sandbox",
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (sandboxState.isStreaming) {
-                                MaterialTheme.colorScheme.errorContainer
-                            } else {
-                                MaterialTheme.colorScheme.surfaceContainer
-                            }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (sandboxState.isStreaming) MaterialTheme.colorScheme.error
+                                        else MaterialTheme.colorScheme.primary
+                                    )
+                            )
                             Text(
-                                text = if (sandboxState.isStreaming) {
-                                    "LIVE · ${formatDurationMs(sandboxState.elapsedMillis)}"
-                                } else {
-                                    preferences.routingMode.label
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (sandboxState.isStreaming) {
-                                    MaterialTheme.colorScheme.onErrorContainer
-                                } else {
-                                    MaterialTheme.colorScheme.primary
-                                },
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                text = "Live Dictation Composer",
+                                style = MaterialTheme.typography.titleMedium
                             )
                         }
+                        Text(
+                            text = "${sandboxState.text.length} chars",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
 
                     OutlinedTextField(
@@ -301,18 +362,22 @@ fun KeyboardScreen(
                         onValueChange = onSandboxTextChange,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(132.dp)
+                            .height(124.dp)
                             .testTag("keyboard_sandbox_input"),
                         placeholder = {
                             Text(
-                                text = "Hold or tap the mic below — Cantonese streams live right here…",
+                                text = "Try the Cantonese voice keyboard deck below — live words stream right here…",
                                 style = MaterialTheme.typography.bodyMedium
                             )
                         },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                        ),
                         shape = RoundedCornerShape(16.dp)
                     )
 
-                    if (sandboxState.livePartial.isNotBlank()) {
+                    AnimatedVisibility(visible = sandboxState.livePartial.isNotBlank()) {
                         Surface(
                             shape = RoundedCornerShape(12.dp),
                             color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
@@ -328,138 +393,15 @@ fun KeyboardScreen(
                         }
                     }
 
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        listOf("，", "。", "？", "！", "、", "啦", "㗎", "唔該").forEachIndexed { idx, token ->
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = MaterialTheme.colorScheme.surfaceContainer,
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                                modifier = Modifier
-                                    .minimumInteractiveComponentSize()
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .clickable { onAppendSymbol(token) }
-                                    .testTag("sandbox_punct_$idx")
-                            ) {
-                                Text(
-                                    text = token,
-                                    style = MaterialTheme.typography.labelLarge,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    AnimatedLevelBar(
-                        level = sandboxState.liveLevel,
-                        isActive = sandboxState.isStreaming
-                    )
-
-                    Text(
-                        text = sandboxState.statusNote,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    if (!hasMicPermission) {
-                        Button(
-                            onClick = onRequestMicPermission,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(54.dp)
-                                .testTag("sandbox_mic_button"),
-                            shape = RoundedCornerShape(16.dp)
-                        ) {
-                            Icon(Icons.Filled.Mic, contentDescription = "Grant microphone access")
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Allow Microphone for Live Dictation")
-                        }
-                    } else {
-                        val isStreaming = sandboxState.isStreaming
-                        val latestIsStreaming by rememberUpdatedState(isStreaming)
-                        val latestOnStartSandbox by rememberUpdatedState(onStartSandboxLive)
-                        val latestOnLockSandbox by rememberUpdatedState(onLockSandboxHandsFree)
-                        val latestOnStopSandbox by rememberUpdatedState(onStopSandboxLive)
-                        val padBg = if (isStreaming) {
-                            MaterialTheme.colorScheme.error
-                        } else {
-                            MaterialTheme.colorScheme.primary
-                        }
-                        val padFg = if (isStreaming) {
-                            MaterialTheme.colorScheme.onError
-                        } else {
-                            MaterialTheme.colorScheme.onPrimary
-                        }
-
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(58.dp)
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(padBg)
-                                .pointerInput(Unit) {
-                                    detectTapGestures(
-                                        onPress = {
-                                            val downAt = System.currentTimeMillis()
-                                            if (latestIsStreaming) {
-                                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                                latestOnStopSandbox()
-                                                tryAwaitRelease()
-                                            } else {
-                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                latestOnStartSandbox(true)
-                                                val released = tryAwaitRelease()
-                                                val heldMs = System.currentTimeMillis() - downAt
-                                                if (released && heldMs < 320L) {
-                                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                                    latestOnLockSandbox()
-                                                } else {
-                                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                                    latestOnStopSandbox()
-                                                }
-                                            }
-                                        }
-                                    )
-                                }
-                                .testTag("sandbox_mic_button"),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Icon(
-                                    imageVector = when {
-                                        isStreaming && !sandboxState.isHoldToTalk -> Icons.Filled.Stop
-                                        isStreaming -> Icons.Filled.GraphicEq
-                                        else -> Icons.Filled.Mic
-                                    },
-                                    contentDescription = "Live Cantonese mic",
-                                    tint = padFg
-                                )
-                                Text(
-                                    text = when {
-                                        isStreaming && sandboxState.isHoldToTalk -> "Live Streaming · Release When Done"
-                                        isStreaming -> "Hands-Free Live · Tap to Stop"
-                                        else -> "Hold to Speak · Tap Hands-Free"
-                                    },
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = padFg,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
-
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         OutlinedButton(
-                            onClick = onUndoSandbox,
+                            onClick = {
+                                haptics.keyTap()
+                                onUndoSandbox()
+                            },
                             enabled = sandboxState.lastInsertedLength > 0,
                             modifier = Modifier
                                 .weight(1f)
@@ -470,13 +412,16 @@ fun KeyboardScreen(
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.Undo,
                                 contentDescription = "Undo last dictation",
-                                modifier = Modifier.size(16.dp)
+                                modifier = Modifier.size(15.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text("Undo")
                         }
                         OutlinedButton(
-                            onClick = { onCopySandbox(sandboxState.text) },
+                            onClick = {
+                                haptics.confirm()
+                                onCopySandbox(sandboxState.text)
+                            },
                             enabled = sandboxState.text.isNotBlank(),
                             modifier = Modifier
                                 .weight(1f)
@@ -487,13 +432,16 @@ fun KeyboardScreen(
                             Icon(
                                 imageVector = Icons.Filled.ContentCopy,
                                 contentDescription = "Copy sandbox text",
-                                modifier = Modifier.size(16.dp)
+                                modifier = Modifier.size(15.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text("Copy")
                         }
                         OutlinedButton(
-                            onClick = onClearSandbox,
+                            onClick = {
+                                haptics.error()
+                                onClearSandbox()
+                            },
                             enabled = sandboxState.text.isNotBlank(),
                             modifier = Modifier
                                 .weight(1f)
@@ -504,7 +452,7 @@ fun KeyboardScreen(
                             Icon(
                                 imageVector = Icons.Outlined.DeleteSweep,
                                 contentDescription = "Clear sandbox",
-                                modifier = Modifier.size(16.dp)
+                                modifier = Modifier.size(15.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text("Clear")
@@ -513,16 +461,59 @@ fun KeyboardScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            // Docked Interactive Voice Keyboard Deck (Mirrors the System Voice IME!)
+            VoiceKeyboardDeck(
+                sandboxState = sandboxState,
+                preferences = preferences,
+                hasMicPermission = hasMicPermission,
+                onRequestMicPermission = onRequestMicPermission,
+                onCycleRoutingMode = {
+                    val next = when (preferences.routingMode) {
+                        RoutingMode.AUTO -> RoutingMode.GEMINI_ONLY
+                        RoutingMode.GEMINI_ONLY -> RoutingMode.OPENAI_ONLY
+                        RoutingMode.OPENAI_ONLY -> RoutingMode.AUTO
+                    }
+                    onSelectRoutingMode(next)
+                },
+                onToggleFormat = {
+                    val next = if (preferences.defaultFormat == CantoneseFormat.WRITTEN_CHINESE) {
+                        CantoneseFormat.SPOKEN_CANTONESE
+                    } else {
+                        CantoneseFormat.WRITTEN_CHINESE
+                    }
+                    onSelectFormat(next)
+                },
+                onStartSandboxLive = onStartSandboxLive,
+                onLockSandboxHandsFree = onLockSandboxHandsFree,
+                onStopSandboxLive = onStopSandboxLive,
+                onCancelSandboxLive = onCancelSandboxLive,
+                onAppendSymbol = onAppendSymbol,
+                onBackspace = onBackspaceSandbox,
+                onUndoSandbox = onUndoSandbox,
+                onOpenImePicker = openImePicker
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
         }
     }
 }
 
-private fun checkImeEnabled(context: Context): Boolean {
+private data class ImeActivationStatus(
+    val isEnabled: Boolean,
+    val isActiveDefault: Boolean
+)
+
+private fun inspectImeStatus(context: Context): ImeActivationStatus {
     return try {
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-        imm?.enabledInputMethodList?.any { it.packageName == context.packageName } == true
+        val enabled = imm?.enabledInputMethodList?.any { it.packageName == context.packageName } == true
+        val currentDefault = Settings.Secure.getString(
+            context.contentResolver,
+            Settings.Secure.DEFAULT_INPUT_METHOD
+        ).orEmpty()
+        val isActive = currentDefault.startsWith(context.packageName)
+        ImeActivationStatus(isEnabled = enabled, isActiveDefault = isActive)
     } catch (_: Exception) {
-        false
+        ImeActivationStatus(isEnabled = false, isActiveDefault = false)
     }
 }

@@ -38,6 +38,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.example.core.LocalStudioHaptics
 import com.example.model.ApiKeyStatus
 import com.example.model.CantoneseFormat
 import com.example.model.RoutingMode
@@ -247,6 +248,7 @@ private fun StudioHeader(
             else -> "Firebase AI"
         }
 
+        val haptics = LocalStudioHaptics.current
         Surface(
             shape = RoundedCornerShape(14.dp),
             color = MaterialTheme.colorScheme.surface,
@@ -254,7 +256,10 @@ private fun StudioHeader(
             modifier = Modifier
                 .minimumInteractiveComponentSize()
                 .clip(RoundedCornerShape(14.dp))
-                .clickable(onClick = onOpenKeysTab)
+                .clickable {
+                    haptics.tick()
+                    onOpenKeysTab()
+                }
                 .testTag("header_provider_pill")
         ) {
             Row(
@@ -462,6 +467,7 @@ private fun QuickActionTile(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val haptics = LocalStudioHaptics.current
     Surface(
         shape = RoundedCornerShape(18.dp),
         color = MaterialTheme.colorScheme.surface,
@@ -469,7 +475,10 @@ private fun QuickActionTile(
         modifier = modifier
             .minimumInteractiveComponentSize()
             .clip(RoundedCornerShape(18.dp))
-            .clickable(onClick = onClick)
+            .clickable {
+                haptics.tick()
+                onClick()
+            }
     ) {
         Column(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 14.dp),

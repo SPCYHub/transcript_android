@@ -44,7 +44,9 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -59,6 +61,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.core.AppContainer
+import com.example.core.LocalStudioHaptics
 import com.example.core.configureAppCheck
 import com.example.model.AudioSourceType
 import com.example.ui.components.studioGridBackground
@@ -109,20 +112,27 @@ class MainActivity : ComponentActivity() {
             val viewModel: StudioViewModel = viewModel()
             val preferences by viewModel.preferences.collectAsStateWithLifecycle()
 
-            CantoScribeTheme(themePreference = preferences.themePreference) {
-                val pendingUri by incomingSharedAudioUri.collectAsStateWithLifecycle()
-                val shouldOpenKeyboard by openKeyboardTabFlag.collectAsStateWithLifecycle()
-                val shouldAutoStartLive by autoStartLiveFlag.collectAsStateWithLifecycle()
+            val studioHaptics = AppContainer.studioHaptics
+            SideEffect {
+                studioHaptics.enabled = preferences.hapticsEnabled
+            }
 
-                CantoScribeRoot(
-                    viewModel = viewModel,
-                    pendingSharedUri = pendingUri,
-                    onConsumeSharedUri = { incomingSharedAudioUri.value = null },
-                    shouldOpenKeyboardTab = shouldOpenKeyboard,
-                    onConsumeOpenKeyboardTab = { openKeyboardTabFlag.value = false },
-                    shouldAutoStartLive = shouldAutoStartLive,
-                    onConsumeAutoStartLive = { autoStartLiveFlag.value = false }
-                )
+            CompositionLocalProvider(LocalStudioHaptics provides studioHaptics) {
+                CantoScribeTheme(themePreference = preferences.themePreference) {
+                    val pendingUri by incomingSharedAudioUri.collectAsStateWithLifecycle()
+                    val shouldOpenKeyboard by openKeyboardTabFlag.collectAsStateWithLifecycle()
+                    val shouldAutoStartLive by autoStartLiveFlag.collectAsStateWithLifecycle()
+
+                    CantoScribeRoot(
+                        viewModel = viewModel,
+                        pendingSharedUri = pendingUri,
+                        onConsumeSharedUri = { incomingSharedAudioUri.value = null },
+                        shouldOpenKeyboardTab = shouldOpenKeyboard,
+                        onConsumeOpenKeyboardTab = { openKeyboardTabFlag.value = false },
+                        shouldAutoStartLive = shouldAutoStartLive,
+                        onConsumeAutoStartLive = { autoStartLiveFlag.value = false }
+                    )
+                }
             }
         }
     }
@@ -185,6 +195,7 @@ private fun CantoScribeRoot(
     onConsumeAutoStartLive: () -> Unit
 ) {
     val context = LocalContext.current
+    val haptics = LocalStudioHaptics.current
     val snackbarHostState = remember { SnackbarHostState() }
 
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -229,6 +240,7 @@ private fun CantoScribeRoot(
     val copyToClipboard: (String, String) -> Unit = { text, toast ->
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         clipboard?.setPrimaryClip(ClipData.newPlainText("CantoScribe Transcript", text))
+        haptics.confirm()
         viewModel.postToast(toast)
     }
 
@@ -277,10 +289,12 @@ private fun CantoScribeRoot(
     }
 
     BackHandler(enabled = currentDestination != AppDestination.STUDIO) {
+        haptics.tick()
         currentDestination = AppDestination.STUDIO
     }
 
     val shareText: (String) -> Unit = { text ->
+        haptics.tick()
         val shareIntent = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_TEXT, text)
@@ -315,7 +329,10 @@ private fun CantoScribeRoot(
                             val selected = currentDestination == dest
                             NavigationBarItem(
                                 selected = selected,
-                                onClick = { currentDestination = dest },
+                                onClick = {
+                                    if (!selected) haptics.tick()
+                                    currentDestination = dest
+                                },
                                 icon = {
                                     Icon(
                                         imageVector = if (selected) dest.selectedIcon else dest.unselectedIcon,
@@ -350,7 +367,10 @@ private fun CantoScribeRoot(
                             val selected = currentDestination == dest
                             NavigationRailItem(
                                 selected = selected,
-                                onClick = { currentDestination = dest },
+                                onClick = {
+                                    if (!selected) haptics.tick()
+                                    currentDestination = dest
+                                },
                                 icon = {
                                     Icon(
                                         imageVector = if (selected) dest.selectedIcon else dest.unselectedIcon,
@@ -400,11 +420,15 @@ private fun CantoScribeRoot(
                             onRequestMicPermission = {
                                 micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             },
+                            onSelectRoutingMode = viewModel::setRoutingMode,
+                            onSelectFormat = viewModel::selectDisplayFormat,
                             onStartSandboxLive = viewModel::startSandboxLive,
                             onLockSandboxHandsFree = viewModel::lockSandboxHandsFree,
                             onStopSandboxLive = viewModel::stopSandboxLive,
+                            onCancelSandboxLive = viewModel::cancelSandboxLive,
                             onSandboxTextChange = viewModel::updateSandboxText,
                             onAppendSymbol = viewModel::appendSandboxSymbol,
+                            onBackspaceSandbox = viewModel::backspaceSandbox,
                             onUndoSandbox = viewModel::undoSandboxLastDictation,
                             onClearSandbox = viewModel::clearSandbox,
                             onCopySandbox = { copyToClipboard(it, "Copied sandbox text") }
@@ -435,6 +459,7 @@ private fun CantoScribeRoot(
                             onClearOpenAiKey = viewModel::clearOpenAiApiKey,
                             onTestOpenAiKey = viewModel::testOpenAiKey,
                             onSelectTheme = viewModel::setThemePreference,
+                            onToggleHaptics = viewModel::setHapticsEnabled,
                             onToggleAutoCopy = viewModel::setAutoCopyOnFinish,
                             onToggleIncludeWritten = viewModel::setIncludeWrittenInAuto,
                             onSaveGlossary = viewModel::setCustomGlossary

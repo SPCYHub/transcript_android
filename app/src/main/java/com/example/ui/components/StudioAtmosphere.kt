@@ -43,6 +43,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.core.LocalStudioHaptics
 import com.example.model.ApiKeyStatus
 import com.example.model.RoutingMode
 import java.util.Locale
@@ -227,6 +228,7 @@ fun EngineSelectorPillBar(
     onSelectMode: (RoutingMode) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val haptics = LocalStudioHaptics.current
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -277,7 +279,10 @@ fun EngineSelectorPillBar(
                         .weight(1f)
                         .minimumInteractiveComponentSize()
                         .clip(RoundedCornerShape(12.dp))
-                        .clickable { onSelectMode(mode) }
+                        .clickable {
+                            if (!isSelected) haptics.tick()
+                            onSelectMode(mode)
+                        }
                         .testTag("routing_mode_${mode.name.lowercase()}")
                 ) {
                     Row(

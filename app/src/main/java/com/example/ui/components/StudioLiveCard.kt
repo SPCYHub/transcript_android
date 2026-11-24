@@ -48,6 +48,7 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import com.example.core.LocalStudioHaptics
 import com.example.model.RoutingMode
 import com.example.model.StudioUiState
 
@@ -57,6 +58,7 @@ fun LiveStreamingCanvasCard(
     onCopyLiveNow: () -> Unit,
     onOpenKeys: () -> Unit
 ) {
+    val haptics = LocalStudioHaptics.current
     val pulseTransition = rememberInfiniteTransition(label = "live_cursor_pulse")
     val cursorAlpha by pulseTransition.animateFloat(
         initialValue = 1f,
@@ -220,7 +222,10 @@ fun LiveStreamingCanvasCard(
                         ) {
                             Spacer(modifier = Modifier.width(8.dp))
                             OutlinedButton(
-                                onClick = onOpenKeys,
+                                onClick = {
+                                    haptics.tick()
+                                    onOpenKeys()
+                                },
                                 shape = RoundedCornerShape(10.dp),
                                 modifier = Modifier.minimumInteractiveComponentSize()
                             ) {
@@ -302,6 +307,7 @@ fun ErrorRecoveryCard(
     onRetry: (RoutingMode?) -> Unit,
     onOpenKeys: () -> Unit
 ) {
+    val haptics = LocalStudioHaptics.current
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -351,7 +357,10 @@ fun ErrorRecoveryCard(
             ) {
                 if (state.isAppCheckOrKeyError) {
                     Button(
-                        onClick = onOpenKeys,
+                        onClick = {
+                            haptics.tick()
+                            onOpenKeys()
+                        },
                         modifier = Modifier
                             .minimumInteractiveComponentSize()
                             .testTag("error_open_keys_button"),
@@ -372,7 +381,10 @@ fun ErrorRecoveryCard(
                 }
 
                 OutlinedButton(
-                    onClick = { onRetry(null) },
+                    onClick = {
+                        haptics.tick()
+                        onRetry(null)
+                    },
                     modifier = Modifier
                         .minimumInteractiveComponentSize()
                         .testTag("retry_transcribe_button"),
@@ -389,7 +401,10 @@ fun ErrorRecoveryCard(
 
                 if (state.canRetryWithAlternateEngine && state.suggestedEngine != null) {
                     OutlinedButton(
-                        onClick = { onRetry(state.suggestedEngine) },
+                        onClick = {
+                            haptics.tick()
+                            onRetry(state.suggestedEngine)
+                        },
                         modifier = Modifier
                             .minimumInteractiveComponentSize()
                             .testTag("switch_engine_retry_button"),

@@ -49,6 +49,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.core.LocalStudioHaptics
 import com.example.model.CantoneseFormat
 import com.example.model.DeepReviewResult
 import com.example.model.TranscriptRecord
@@ -67,6 +68,7 @@ fun TranscriptResultCard(
     onRunDeepReview: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val haptics = LocalStudioHaptics.current
     val activeText = when (displayFormat) {
         CantoneseFormat.SPOKEN_CANTONESE -> record.deepReview?.refinedSpoken ?: record.spokenCantonese
         CantoneseFormat.WRITTEN_CHINESE -> record.deepReview?.refinedWritten
@@ -199,7 +201,10 @@ fun TranscriptResultCard(
                                 .weight(1f)
                                 .minimumInteractiveComponentSize()
                                 .clip(RoundedCornerShape(10.dp))
-                                .clickable { onSelectFormat(fmt) }
+                                .clickable {
+                                    if (!selected) haptics.tick()
+                                    onSelectFormat(fmt)
+                                }
                                 .testTag("format_tab_${fmt.name.lowercase()}")
                         ) {
                             Box(contentAlignment = Alignment.Center) {
@@ -325,7 +330,10 @@ fun TranscriptResultCard(
             }
 
             Button(
-                onClick = onRunDeepReview,
+                onClick = {
+                    haptics.recordStart()
+                    onRunDeepReview()
+                },
                 enabled = !isRunningDeepReview,
                 modifier = Modifier
                     .fillMaxWidth()

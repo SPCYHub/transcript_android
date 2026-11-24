@@ -131,6 +131,7 @@ data class UserPreferences(
     val defaultFormat: CantoneseFormat = CantoneseFormat.SPOKEN_CANTONESE,
     val includeWrittenInAuto: Boolean = true,
     val autoCopyOnFinish: Boolean = true,
+    val hapticsEnabled: Boolean = true,
     val customGlossary: String = "",
     val themePreference: ThemePreference = ThemePreference.SYSTEM
 )

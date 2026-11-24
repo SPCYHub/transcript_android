@@ -29,6 +29,7 @@ class PreferencesRepository(private val appContext: Context) {
         val DEFAULT_FORMAT = stringPreferencesKey("default_format")
         val INCLUDE_WRITTEN_AUTO = booleanPreferencesKey("include_written_auto")
         val AUTO_COPY_ON_FINISH = booleanPreferencesKey("auto_copy_on_finish")
+        val HAPTICS_ENABLED = booleanPreferencesKey("haptics_enabled")
         val CUSTOM_GLOSSARY = stringPreferencesKey("custom_glossary")
         val THEME_PREFERENCE = stringPreferencesKey("theme_preference")
     }
@@ -51,6 +52,7 @@ class PreferencesRepository(private val appContext: Context) {
                     ?: CantoneseFormat.SPOKEN_CANTONESE,
                 includeWrittenInAuto = prefs[Keys.INCLUDE_WRITTEN_AUTO] ?: true,
                 autoCopyOnFinish = prefs[Keys.AUTO_COPY_ON_FINISH] ?: true,
+                hapticsEnabled = prefs[Keys.HAPTICS_ENABLED] ?: true,
                 customGlossary = prefs[Keys.CUSTOM_GLOSSARY].orEmpty(),
                 themePreference = prefs[Keys.THEME_PREFERENCE]
                     ?.let { runCatching { ThemePreference.valueOf(it) }.getOrNull() }
@@ -74,6 +76,10 @@ class PreferencesRepository(private val appContext: Context) {
 
     suspend fun setAutoCopyOnFinish(enabled: Boolean) {
         appContext.cantoPrefsDataStore.edit { it[Keys.AUTO_COPY_ON_FINISH] = enabled }
+    }
+
+    suspend fun setHapticsEnabled(enabled: Boolean) {
+        appContext.cantoPrefsDataStore.edit { it[Keys.HAPTICS_ENABLED] = enabled }
     }
 
     suspend fun setCustomGlossary(glossary: String) {

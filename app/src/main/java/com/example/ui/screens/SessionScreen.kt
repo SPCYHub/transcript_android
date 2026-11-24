@@ -55,6 +55,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.core.LocalStudioHaptics
 import com.example.model.AudioSourceType
 import com.example.model.TranscriptRecord
 import com.example.ui.components.formatByteSize
@@ -71,6 +72,7 @@ fun SessionScreen(
     onClearAll: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val haptics = LocalStudioHaptics.current
     var searchQuery by remember { mutableStateOf("") }
     var showClearConfirm by remember { mutableStateOf(false) }
 
@@ -102,6 +104,7 @@ fun SessionScreen(
             confirmButton = {
                 Button(
                     onClick = {
+                        haptics.error()
                         showClearConfirm = false
                         onClearAll()
                     },
@@ -112,7 +115,12 @@ fun SessionScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showClearConfirm = false }) {
+                TextButton(
+                    onClick = {
+                        haptics.tick()
+                        showClearConfirm = false
+                    }
+                ) {
                     Text("Cancel")
                 }
             }
@@ -152,7 +160,10 @@ fun SessionScreen(
 
                 if (records.isNotEmpty()) {
                     OutlinedButton(
-                        onClick = { showClearConfirm = true },
+                        onClick = {
+                            haptics.tick()
+                            showClearConfirm = true
+                        },
                         modifier = Modifier
                             .minimumInteractiveComponentSize()
                             .testTag("clear_session_button"),
@@ -235,9 +246,15 @@ fun SessionScreen(
                     items(filteredRecords, key = { it.id }) { item ->
                         SessionRecordRow(
                             record = item,
-                            onClick = { onOpenRecord(item) },
+                            onClick = {
+                                haptics.tick()
+                                onOpenRecord(item)
+                            },
                             onCopy = { onCopyText(item.spokenCantonese) },
-                            onDelete = { onDeleteRecord(item.id) }
+                            onDelete = {
+                                haptics.error()
+                                onDeleteRecord(item.id)
+                            }
                         )
                     }
                 }

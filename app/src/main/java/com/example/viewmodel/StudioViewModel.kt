@@ -9,6 +9,7 @@ import com.example.ai.LiveTranscriptionController
 import com.example.ai.TranscriptionRouter
 import com.example.audio.AudioInputHandler
 import com.example.core.AppContainer
+import com.example.core.StudioHaptics
 import com.example.data.PreferencesRepository
 import com.example.data.SecureKeyStore
 import com.example.data.SessionTranscriptStore
@@ -40,6 +41,7 @@ data class SandboxState(
     val isStreaming: Boolean = false,
     val isHoldToTalk: Boolean = false,
     val liveLevel: Float = 0.08f,
+    val waveformHistory: List<Float> = emptyList(),
     val elapsedMillis: Long = 0L,
     val statusNote: String = "Hold to speak or quick tap for hands-free live Cantonese",
     val lastInsertedLength: Int = 0
@@ -51,7 +53,8 @@ class StudioViewModel(
     private val liveController: LiveTranscriptionController = AppContainer.liveTranscriptionController,
     private val preferencesRepo: PreferencesRepository = AppContainer.preferencesRepository,
     private val keyStore: SecureKeyStore = AppContainer.secureKeyStore,
-    private val sessionStore: SessionTranscriptStore = AppContainer.sessionStore
+    private val sessionStore: SessionTranscriptStore = AppContainer.sessionStore,
+    private val haptics: StudioHaptics = AppContainer.studioHaptics
 ) : ViewModel() {
 
     val preferences: StateFlow<UserPreferences> = preferencesRepo.preferencesFlow.stateIn(
@@ -96,6 +99,7 @@ class StudioViewModel(
         viewModelScope.launch {
             preferencesRepo.preferencesFlow.collectLatest { prefs ->
                 _displayFormat.value = prefs.defaultFormat
+                haptics.enabled = prefs.hapticsEnabled
             }
         }
     }
@@ -132,6 +136,13 @@ class StudioViewModel(
     fun setIncludeWrittenInAuto(include: Boolean) {
         viewModelScope.launch {
             preferencesRepo.setIncludeWrittenInAuto(include)
+        }
+    }
+
+    fun setHapticsEnabled(enabled: Boolean) {
+        haptics.enabled = enabled
+        viewModelScope.launch {
+            preferencesRepo.setHapticsEnabled(enabled)
         }
     }
 
@@ -205,14 +216,18 @@ class StudioViewModel(
     fun testGeminiKey(candidateKey: String? = null) {
         viewModelScope.launch {
             _geminiKeyTest.value = KeyTestResult.Testing
-            _geminiKeyTest.value = keyStore.verifyGeminiKey(candidateKey)
+            val result = keyStore.verifyGeminiKey(candidateKey)
+            _geminiKeyTest.value = result
+            if (result is KeyTestResult.Valid) haptics.confirm() else if (result is KeyTestResult.Invalid) haptics.error()
         }
     }
 
     fun testOpenAiKey(candidateKey: String? = null) {
         viewModelScope.launch {
             _openAiKeyTest.value = KeyTestResult.Testing
-            _openAiKeyTest.value = keyStore.verifyOpenAiKey(candidateKey)
+            val result = keyStore.verifyOpenAiKey(candidateKey)
+            _openAiKeyTest.value = result
+            if (result is KeyTestResult.Valid) haptics.confirm() else if (result is KeyTestResult.Invalid) haptics.error()
         }
     }
 
@@ -307,6 +322,7 @@ class StudioViewModel(
                     is LiveFinalizeResult.Success -> {
                         val record = result.record
                         _uiState.value = StudioUiState.Success(record = record)
+                        haptics.confirm()
 
                         if (prefs.autoCopyOnFinish) {
                             val textToCopy = if (_displayFormat.value == CantoneseFormat.WRITTEN_CHINESE &&
@@ -327,6 +343,7 @@ class StudioViewModel(
                     }
 
                     is LiveFinalizeResult.Error -> {
+                        haptics.error()
                         val alternate = when (prefs.routingMode) {
                             RoutingMode.OPENAI_ONLY -> RoutingMode.GEMINI_ONLY
                             RoutingMode.GEMINI_ONLY -> if (router.isOpenAiReady) RoutingMode.OPENAI_ONLY else null
@@ -453,9 +470,11 @@ class StudioViewModel(
                     isConvertingWritten = false,
                     isRunningDeepReview = false
                 )
+                haptics.confirm()
                 _snackbarMessage.value = "Deep Cantonese Review complete"
             }.onFailure { err ->
                 Log.e(TAG, "Deep review failed", err)
+                haptics.error()
                 val latest = _uiState.value as? StudioUiState.Success ?: return@onFailure
                 _uiState.value = latest.copy(
                     isRunningDeepReview = false,
@@ -507,6 +526,7 @@ class StudioViewModel(
 
             result.onSuccess { record ->
                 _uiState.value = StudioUiState.Success(record = record)
+                haptics.confirm()
                 if (prefs.autoCopyOnFinish) {
                     _autoCopyTextEvent.value = record.spokenCantonese
                 }
@@ -516,6 +536,7 @@ class StudioViewModel(
                     convertCurrentRecordToWritten(record)
                 }
             }.onFailure { err ->
+                haptics.error()
                 val errMsg = err.message ?: "Transcription failed."
                 val openAiReady = router.isOpenAiReady
                 val alternate = when (effectiveMode) {
@@ -559,6 +580,17 @@ class StudioViewModel(
     fun appendSandboxSymbol(symbol: String) {
         val current = _sandboxState.value
         _sandboxState.value = current.copy(text = current.text + symbol)
+    }
+
+    fun backspaceSandbox() {
+        val current = _sandboxState.value
+        if (current.text.isEmpty()) return
+        val nextText = current.text.dropLast(1)
+        val nextLastLen = (current.lastInsertedLength - 1).coerceAtLeast(0)
+        _sandboxState.value = current.copy(
+            text = nextText,
+            lastInsertedLength = nextLastLen
+        )
     }
 
     fun undoSandboxLastDictation() {
@@ -608,10 +640,12 @@ class StudioViewModel(
                         livePartial = "",
                         lastInsertedLength = inserted.length
                     )
+                    haptics.phraseCommit()
                 }
             )
 
             if (started.isFailure) {
+                haptics.error()
                 _sandboxState.value = _sandboxState.value.copy(
                     statusNote = started.exceptionOrNull()?.message ?: "Unable to start live keyboard mic"
                 )
@@ -622,6 +656,7 @@ class StudioViewModel(
                 isStreaming = true,
                 isHoldToTalk = isHoldToTalk,
                 livePartial = "",
+                waveformHistory = emptyList(),
                 statusNote = "Streaming live Cantonese…"
             )
 
@@ -631,6 +666,7 @@ class StudioViewModel(
                     if (live.isActive) {
                         _sandboxState.value = _sandboxState.value.copy(
                             liveLevel = live.metrics.normalizedLevel,
+                            waveformHistory = live.metrics.waveformHistory,
                             elapsedMillis = live.metrics.elapsedMillis,
                             statusNote = live.errorMessage
                                 ?: if (live.isConnecting) "Connecting live stream…" else "LIVE · ${live.engineLabel}"
@@ -657,8 +693,14 @@ class StudioViewModel(
                 liveCollectorJob?.cancel()
                 liveCollectorJob = null
                 val note = when (result) {
-                    is LiveFinalizeResult.Success -> "Live stream complete · ${result.record.engineUsed.displayName}"
-                    is LiveFinalizeResult.Error -> "Error: ${result.message}"
+                    is LiveFinalizeResult.Success -> {
+                        haptics.confirm()
+                        "Live stream complete · ${result.record.engineUsed.displayName}"
+                    }
+                    is LiveFinalizeResult.Error -> {
+                        haptics.error()
+                        "Error: ${result.message}"
+                    }
                     LiveFinalizeResult.Empty -> "No speech detected — hold to speak or tap for hands-free"
                 }
                 _sandboxState.value = _sandboxState.value.copy(
@@ -666,6 +708,7 @@ class StudioViewModel(
                     isHoldToTalk = false,
                     livePartial = "",
                     liveLevel = 0.08f,
+                    waveformHistory = emptyList(),
                     statusNote = note
                 )
             } finally {
@@ -674,7 +717,8 @@ class StudioViewModel(
         }
     }
 
-    private fun cancelSandboxLive() {
+    fun cancelSandboxLive() {
+        isFinalizingSandboxLive = false
         liveCollectorJob?.cancel()
         liveCollectorJob = null
         liveController.stopAndDiscard()
@@ -683,6 +727,7 @@ class StudioViewModel(
             isHoldToTalk = false,
             livePartial = "",
             liveLevel = 0.08f,
+            waveformHistory = emptyList(),
             statusNote = "Cancelled"
         )
     }

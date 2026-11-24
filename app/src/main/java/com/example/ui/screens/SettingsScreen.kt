@@ -59,6 +59,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import com.example.core.LocalStudioHaptics
 import com.example.model.ApiKeyStatus
 import com.example.model.KeyTestResult
 import com.example.model.ThemePreference
@@ -79,11 +80,13 @@ fun SettingsScreen(
     onClearOpenAiKey: () -> Unit,
     onTestOpenAiKey: (String?) -> Unit,
     onSelectTheme: (ThemePreference) -> Unit,
+    onToggleHaptics: (Boolean) -> Unit,
     onToggleAutoCopy: (Boolean) -> Unit,
     onToggleIncludeWritten: (Boolean) -> Unit,
     onSaveGlossary: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val haptics = LocalStudioHaptics.current
     var geminiDraft by remember { mutableStateOf("") }
     var showGeminiInput by remember { mutableStateOf(false) }
     var modelDraft by remember(apiKeyStatus.customGeminiModel) {
@@ -197,7 +200,10 @@ fun SettingsScreen(
                     if (apiKeyStatus.hasUserGeminiKey) {
                         SavedKeyPill(
                             maskedKey = apiKeyStatus.maskedGeminiKey.orEmpty(),
-                            onClear = onClearGeminiKey,
+                            onClear = {
+                                haptics.error()
+                                onClearGeminiKey()
+                            },
                             clearTag = "clear_gemini_key_button"
                         )
 
@@ -219,7 +225,10 @@ fun SettingsScreen(
                             }
                             Switch(
                                 checked = apiKeyStatus.usePersonalGeminiKey,
-                                onCheckedChange = onToggleUsePersonalGemini,
+                                onCheckedChange = { checked ->
+                                    haptics.toggle(checked)
+                                    onToggleUsePersonalGemini(checked)
+                                },
                                 modifier = Modifier.testTag("toggle_personal_gemini_switch")
                             )
                         }
@@ -245,7 +254,12 @@ fun SettingsScreen(
                         },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                         trailingIcon = {
-                            IconButton(onClick = { showGeminiInput = !showGeminiInput }) {
+                            IconButton(
+                                onClick = {
+                                    haptics.tick()
+                                    showGeminiInput = !showGeminiInput
+                                }
+                            ) {
                                 Icon(
                                     imageVector = if (showGeminiInput) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
                                     contentDescription = if (showGeminiInput) "Hide key" else "Show key"
@@ -261,6 +275,7 @@ fun SettingsScreen(
                     ) {
                         Button(
                             onClick = {
+                                haptics.confirm()
                                 onSaveGeminiKey(geminiDraft)
                                 geminiDraft = ""
                             },
@@ -274,7 +289,10 @@ fun SettingsScreen(
                             Text("Save Key")
                         }
                         OutlinedButton(
-                            onClick = { onTestGeminiKey(geminiDraft.takeIf { it.isNotBlank() }) },
+                            onClick = {
+                                haptics.tick()
+                                onTestGeminiKey(geminiDraft.takeIf { it.isNotBlank() })
+                            },
                             enabled = geminiDraft.isNotBlank() || apiKeyStatus.hasUserGeminiKey,
                             modifier = Modifier
                                 .weight(1f)
@@ -311,7 +329,10 @@ fun SettingsScreen(
                                     shape = RoundedCornerShape(12.dp)
                                 )
                                 OutlinedButton(
-                                    onClick = { onSaveCustomGeminiModel(modelDraft) },
+                                    onClick = {
+                                        haptics.confirm()
+                                        onSaveCustomGeminiModel(modelDraft)
+                                    },
                                     modifier = Modifier
                                         .minimumInteractiveComponentSize()
                                         .testTag("save_custom_model_button"),
@@ -372,7 +393,10 @@ fun SettingsScreen(
                     if (apiKeyStatus.hasUserOpenAiKey) {
                         SavedKeyPill(
                             maskedKey = apiKeyStatus.maskedOpenAiKey.orEmpty(),
-                            onClear = onClearOpenAiKey,
+                            onClear = {
+                                haptics.error()
+                                onClearOpenAiKey()
+                            },
                             clearTag = "clear_openai_key_button"
                         )
                     }
@@ -397,7 +421,12 @@ fun SettingsScreen(
                         },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                         trailingIcon = {
-                            IconButton(onClick = { showOpenAiInput = !showOpenAiInput }) {
+                            IconButton(
+                                onClick = {
+                                    haptics.tick()
+                                    showOpenAiInput = !showOpenAiInput
+                                }
+                            ) {
                                 Icon(
                                     imageVector = if (showOpenAiInput) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
                                     contentDescription = if (showOpenAiInput) "Hide key" else "Show key"
@@ -413,6 +442,7 @@ fun SettingsScreen(
                     ) {
                         Button(
                             onClick = {
+                                haptics.confirm()
                                 onSaveOpenAiKey(openAiDraft)
                                 openAiDraft = ""
                             },
@@ -426,7 +456,10 @@ fun SettingsScreen(
                             Text("Save Key")
                         }
                         OutlinedButton(
-                            onClick = { onTestOpenAiKey(openAiDraft.takeIf { it.isNotBlank() }) },
+                            onClick = {
+                                haptics.tick()
+                                onTestOpenAiKey(openAiDraft.takeIf { it.isNotBlank() })
+                            },
                             enabled = openAiDraft.isNotBlank() || apiKeyStatus.isOpenAiConfigured,
                             modifier = Modifier
                                 .weight(1f)
@@ -520,7 +553,10 @@ fun SettingsScreen(
                                         .weight(1f)
                                         .minimumInteractiveComponentSize()
                                         .clip(RoundedCornerShape(10.dp))
-                                        .clickable { onSelectTheme(option) }
+                                        .clickable {
+                                            if (!selected) haptics.tick()
+                                            onSelectTheme(option)
+                                        }
                                         .testTag("theme_option_${option.name.lowercase()}")
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
@@ -543,6 +579,32 @@ fun SettingsScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
+                            Text("Haptic Feedback", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "Tactile pulses for voice controls, keyboard keys, and confirmations",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = preferences.hapticsEnabled,
+                            onCheckedChange = { checked ->
+                                onToggleHaptics(checked)
+                                if (checked) {
+                                    haptics.enabled = true
+                                    haptics.confirm()
+                                }
+                            },
+                            modifier = Modifier.testTag("settings_haptics_switch")
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text("Auto-Copy Finished Transcripts", style = MaterialTheme.typography.titleSmall)
                             Text(
                                 "Copy Cantonese output to clipboard automatically",
@@ -552,7 +614,10 @@ fun SettingsScreen(
                         }
                         Switch(
                             checked = preferences.autoCopyOnFinish,
-                            onCheckedChange = onToggleAutoCopy,
+                            onCheckedChange = { checked ->
+                                haptics.toggle(checked)
+                                onToggleAutoCopy(checked)
+                            },
                             modifier = Modifier.testTag("settings_autocopy_switch")
                         )
                     }
@@ -572,7 +637,10 @@ fun SettingsScreen(
                         }
                         Switch(
                             checked = preferences.includeWrittenInAuto,
-                            onCheckedChange = onToggleIncludeWritten,
+                            onCheckedChange = { checked ->
+                                haptics.toggle(checked)
+                                onToggleIncludeWritten(checked)
+                            },
                             modifier = Modifier.testTag("settings_written_auto_switch")
                         )
                     }
@@ -618,7 +686,10 @@ fun SettingsScreen(
                         shape = RoundedCornerShape(14.dp)
                     )
                     Button(
-                        onClick = { onSaveGlossary(glossaryDraft) },
+                        onClick = {
+                            haptics.confirm()
+                            onSaveGlossary(glossaryDraft)
+                        },
                         modifier = Modifier
                             .align(Alignment.End)
                             .minimumInteractiveComponentSize()

@@ -55,6 +55,9 @@ object AppContainer {
     lateinit var liveTranscriptionController: LiveTranscriptionController
         private set
 
+    lateinit var studioHaptics: StudioHaptics
+        private set
+
     fun ensureInitialized(context: Context) {
         if (initialized) return
         synchronized(this) {
@@ -85,6 +88,7 @@ object AppContainer {
                 openAiRest = openAiEngine,
                 sessionStore = sessionStore
             )
+            studioHaptics = AndroidStudioHaptics(appCtx)
             initialized = true
         }
     }
