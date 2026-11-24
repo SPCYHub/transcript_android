@@ -242,10 +242,10 @@ private fun StudioHeader(
         }
 
         val statusLabel = when {
-            apiKeyStatus.isUsingDirectGemini && apiKeyStatus.isOpenAiConfigured -> "BYOK · Dual"
-            apiKeyStatus.isUsingDirectGemini -> "Personal Key"
-            apiKeyStatus.isOpenAiConfigured -> "Dual Live AI"
-            else -> "Firebase AI"
+            apiKeyStatus.isUsingDirectGemini && apiKeyStatus.isOpenAiConfigured -> "Dual Keys"
+            apiKeyStatus.isUsingDirectGemini -> "Gemini Key"
+            apiKeyStatus.isOpenAiConfigured -> "OpenAI Key"
+            else -> "Add API Key"
         }
 
         val haptics = LocalStudioHaptics.current

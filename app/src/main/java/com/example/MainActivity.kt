@@ -62,7 +62,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.core.AppContainer
 import com.example.core.LocalStudioHaptics
-import com.example.core.configureAppCheck
 import com.example.model.AudioSourceType
 import com.example.ui.components.studioGridBackground
 import com.example.ui.screens.KeyboardScreen
@@ -98,13 +97,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // STEP 1: Configure Firebase App Check with launch intent BEFORE UI, ViewModels, or Firebase calls.
-        configureAppCheck(this, intent)
-
-        // STEP 2: Initialize shared AppContainer.
+        // STEP 1: Initialize shared AppContainer.
         AppContainer.ensureInitialized(applicationContext)
 
-        // STEP 3: Extract incoming WhatsApp/audio share or Quick Settings Tile intent.
+        // STEP 2: Extract incoming WhatsApp/audio share or Quick Settings Tile intent.
         extractIncomingIntent(intent)
 
         enableEdgeToEdge()

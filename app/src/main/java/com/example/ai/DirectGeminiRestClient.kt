@@ -20,10 +20,14 @@ private const val TAG = "DirectGeminiRest"
 private const val GEMINI_REST_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 /**
- * Direct Google Gemini REST API client (`generativelanguage.googleapis.com`) used ONLY when
- * the end user explicitly provides and enables their own personal Gemini API key in-app.
+ * Direct Google Gemini REST API client (`generativelanguage.googleapis.com`) using the
+ * end-user's personal Gemini API key saved in-app (no Firebase / no App Check).
  *
- * Completely bypasses Firebase App Check so exported/sideloaded standalone APKs work seamlessly.
+ * Implements official Gemini API audio transcription best practices:
+ * - Top-level `systemInstruction` separated from user audio `contents`.
+ * - Deterministic `temperature = 0.0` for verbatim dictation to minimize hallucinations.
+ * - Optional `mediaResolution = "MEDIA_RESOLUTION_HIGH"` for dense/noisy audio clips,
+ *   with automatic graceful downgrade if a specific model rejects optional config fields.
  */
 class DirectGeminiRestClient {
 
@@ -42,20 +46,79 @@ class DirectGeminiRestClient {
         apiKey: String,
         modelName: String,
         promptText: String,
+        systemInstruction: String? = null,
         audioBytes: ByteArray? = null,
         audioMimeType: String? = null,
-        temperature: Float? = 0.1f,
+        temperature: Float? = 0.0f,
         responseJsonSchema: JSONObject? = null,
-        enableHighThinking: Boolean = false
+        enableHighThinking: Boolean = false,
+        disableThinking: Boolean = false,
+        mediaResolution: String? = null
     ): Result<String> = withContext(Dispatchers.IO) {
-        try {
-            val payload = buildRequestPayload(
+        val primary = executeGenerateContent(
+            apiKey = apiKey,
+            modelName = modelName,
+            promptText = promptText,
+            systemInstruction = systemInstruction,
+            audioBytes = audioBytes,
+            audioMimeType = audioMimeType,
+            temperature = temperature,
+            responseJsonSchema = responseJsonSchema,
+            enableHighThinking = enableHighThinking,
+            disableThinking = disableThinking,
+            mediaResolution = mediaResolution
+        )
+
+        if (primary.isSuccess) return@withContext primary
+
+        // If an optional advanced field (`mediaResolution` or `thinkingConfig`) caused HTTP 400 on a
+        // custom/older model, retry once cleanly without optional config fields.
+        val errMsg = primary.exceptionOrNull()?.message.orEmpty()
+        val hasOptionalConfig = mediaResolution != null || disableThinking || enableHighThinking
+        if (hasOptionalConfig && errMsg.contains("(400)")) {
+            Log.w(TAG, "Retrying $modelName without optional thinking/mediaResolution fields after 400: $errMsg")
+            return@withContext executeGenerateContent(
+                apiKey = apiKey,
+                modelName = modelName,
                 promptText = promptText,
+                systemInstruction = systemInstruction,
                 audioBytes = audioBytes,
                 audioMimeType = audioMimeType,
                 temperature = temperature,
                 responseJsonSchema = responseJsonSchema,
-                enableHighThinking = enableHighThinking
+                enableHighThinking = false,
+                disableThinking = false,
+                mediaResolution = null
+            )
+        }
+
+        primary
+    }
+
+    private fun executeGenerateContent(
+        apiKey: String,
+        modelName: String,
+        promptText: String,
+        systemInstruction: String?,
+        audioBytes: ByteArray?,
+        audioMimeType: String?,
+        temperature: Float?,
+        responseJsonSchema: JSONObject?,
+        enableHighThinking: Boolean,
+        disableThinking: Boolean,
+        mediaResolution: String?
+    ): Result<String> {
+        return try {
+            val payload = buildRequestPayload(
+                promptText = promptText,
+                systemInstruction = systemInstruction,
+                audioBytes = audioBytes,
+                audioMimeType = audioMimeType,
+                temperature = temperature,
+                responseJsonSchema = responseJsonSchema,
+                enableHighThinking = enableHighThinking,
+                disableThinking = disableThinking,
+                mediaResolution = mediaResolution
             )
 
             val url = "$GEMINI_REST_BASE/$modelName:generateContent"
@@ -70,7 +133,7 @@ class DirectGeminiRestClient {
                 val rawBody = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     val err = parseRestError(response.code, rawBody, modelName)
-                    return@withContext Result.failure(IllegalStateException(err))
+                    return Result.failure(IllegalStateException(err))
                 }
                 val text = extractTextFromResponseJson(rawBody)
                 if (text.isBlank()) {
@@ -91,16 +154,21 @@ class DirectGeminiRestClient {
         apiKey: String,
         modelName: String,
         promptText: String,
+        systemInstruction: String? = null,
         audioBytes: ByteArray,
-        audioMimeType: String
+        audioMimeType: String,
+        disableThinking: Boolean = true
     ): Flow<String> = flow {
         val payload = buildRequestPayload(
             promptText = promptText,
+            systemInstruction = systemInstruction,
             audioBytes = audioBytes,
             audioMimeType = audioMimeType,
-            temperature = 0.1f,
+            temperature = 0.0f,
             responseJsonSchema = null,
-            enableHighThinking = false
+            enableHighThinking = false,
+            disableThinking = disableThinking,
+            mediaResolution = null
         )
 
         val url = "$GEMINI_REST_BASE/$modelName:streamGenerateContent?alt=sse"
@@ -114,6 +182,44 @@ class DirectGeminiRestClient {
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
                 val errBody = response.body?.string().orEmpty()
+                if (response.code == 400 && disableThinking) {
+                    // Retry without thinkingConfig for models that don't accept thinkingBudget
+                    val fallbackPayload = buildRequestPayload(
+                        promptText = promptText,
+                        systemInstruction = systemInstruction,
+                        audioBytes = audioBytes,
+                        audioMimeType = audioMimeType,
+                        temperature = 0.0f,
+                        responseJsonSchema = null,
+                        enableHighThinking = false,
+                        disableThinking = false,
+                        mediaResolution = null
+                    )
+                    val retryReq = Request.Builder()
+                        .url(url)
+                        .header("x-goog-api-key", apiKey)
+                        .header("Accept", "text/event-stream")
+                        .post(fallbackPayload.toString().toRequestBody(jsonMediaType))
+                        .build()
+                    client.newCall(retryReq).execute().use { retryResp ->
+                        if (!retryResp.isSuccessful) {
+                            val retryErr = retryResp.body?.string().orEmpty()
+                            throw IllegalStateException(parseRestError(retryResp.code, retryErr, modelName))
+                        }
+                        val retrySource = retryResp.body?.source() ?: return@use
+                        while (!retrySource.exhausted()) {
+                            val line = retrySource.readUtf8Line() ?: break
+                            if (line.startsWith("data:")) {
+                                val data = line.removePrefix("data:").trim()
+                                if (data.isNotEmpty() && data != "[DONE]") {
+                                    val piece = extractTextFromResponseJson(data)
+                                    if (piece.isNotEmpty()) emit(piece)
+                                }
+                            }
+                        }
+                    }
+                    return@use
+                }
                 throw IllegalStateException(parseRestError(response.code, errBody, modelName))
             }
 
@@ -135,11 +241,14 @@ class DirectGeminiRestClient {
 
     private fun buildRequestPayload(
         promptText: String,
+        systemInstruction: String?,
         audioBytes: ByteArray?,
         audioMimeType: String?,
         temperature: Float?,
         responseJsonSchema: JSONObject?,
-        enableHighThinking: Boolean
+        enableHighThinking: Boolean,
+        disableThinking: Boolean,
+        mediaResolution: String?
     ): JSONObject {
         val parts = JSONArray()
         if (audioBytes != null && !audioMimeType.isNullOrBlank()) {
@@ -162,16 +271,35 @@ class DirectGeminiRestClient {
             genConfig.put("responseMimeType", "application/json")
             genConfig.put("responseSchema", responseJsonSchema)
         }
+        if (!mediaResolution.isNullOrBlank()) {
+            genConfig.put("mediaResolution", mediaResolution)
+        }
         if (enableHighThinking) {
             genConfig.put(
                 "thinkingConfig",
                 JSONObject().put("thinkingLevel", "HIGH")
             )
+        } else if (disableThinking) {
+            genConfig.put(
+                "thinkingConfig",
+                JSONObject().put("thinkingBudget", 0)
+            )
         }
 
-        return JSONObject()
+        val root = JSONObject()
             .put("contents", JSONArray().put(userContent))
             .put("generationConfig", genConfig)
+
+        if (!systemInstruction.isNullOrBlank()) {
+            root.put(
+                "systemInstruction",
+                JSONObject()
+                    .put("role", "system")
+                    .put("parts", JSONArray().put(JSONObject().put("text", systemInstruction)))
+            )
+        }
+
+        return root
     }
 
     private fun extractTextFromResponseJson(rawJson: String): String {

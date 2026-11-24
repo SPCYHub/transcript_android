@@ -24,18 +24,21 @@ private const val MIN_COMMIT_AUDIO_BYTES = 24_000 * 2 * 120 / 1000
 private data class RealtimeSessionProfile(
     val modelId: String,
     val useServerVad: Boolean,
+    val enableNoiseReduction: Boolean = true,
     val legacyBetaSchema: Boolean = false
 )
 
 private val SESSION_PROFILES = listOf(
-    // 1. Standard GA Realtime transcription with server VAD + streaming deltas
-    RealtimeSessionProfile(modelId = "gpt-4o-transcribe", useServerVad = true, legacyBetaSchema = false),
-    // 2. Dedicated gpt-live-transcribe (turn_detection = null per OpenAI spec, client commits)
-    RealtimeSessionProfile(modelId = "gpt-live-transcribe", useServerVad = false, legacyBetaSchema = false),
-    // 3. Fast mini realtime transcription with server VAD
-    RealtimeSessionProfile(modelId = "gpt-4o-mini-transcribe", useServerVad = true, legacyBetaSchema = false),
-    // 4. Legacy beta schema fallback (`transcription_session.update`)
-    RealtimeSessionProfile(modelId = "gpt-4o-transcribe", useServerVad = true, legacyBetaSchema = true)
+    // 1. Standard GA Realtime transcription with near-field noise reduction + server VAD
+    RealtimeSessionProfile(modelId = "gpt-4o-transcribe", useServerVad = true, enableNoiseReduction = true, legacyBetaSchema = false),
+    // 2. Standard GA Realtime transcription without noise_reduction (compatibility fallback)
+    RealtimeSessionProfile(modelId = "gpt-4o-transcribe", useServerVad = true, enableNoiseReduction = false, legacyBetaSchema = false),
+    // 3. Fast mini realtime transcription with near-field noise reduction + server VAD
+    RealtimeSessionProfile(modelId = "gpt-4o-mini-transcribe", useServerVad = true, enableNoiseReduction = true, legacyBetaSchema = false),
+    // 4. Dedicated gpt-live-transcribe (turn_detection = null per OpenAI spec, client commits)
+    RealtimeSessionProfile(modelId = "gpt-live-transcribe", useServerVad = false, enableNoiseReduction = true, legacyBetaSchema = false),
+    // 5. Legacy beta schema fallback (`transcription_session.update`)
+    RealtimeSessionProfile(modelId = "gpt-4o-transcribe", useServerVad = true, enableNoiseReduction = true, legacyBetaSchema = true)
 )
 
 interface RealtimeTranscriptListener {
@@ -49,11 +52,11 @@ interface RealtimeTranscriptListener {
 /**
  * Resilient OpenAI Realtime Transcription WebSocket client:
  * - Buffers initial PCM16 24kHz chunks while handshaking so opening words are never dropped.
- * - Negotiates `session.update` after `session.created`, automatically stepping through
- *   compatible OpenAI transcription models/schemas (`gpt-4o-transcribe`, `gpt-live-transcribe`,
- *   `gpt-4o-mini-transcribe`) if the account or API version rejects a schema.
- * - Handles `.delta`, `.completed`, and `.failed` transcription events cleanly.
- * - Properly awaits completion on finalize (`commitAndAwaitCompletion`) instead of disconnecting early.
+ * - Enables official `noise_reduction: { "type": "near_field" }` for handheld microphone clarity
+ *   and reduced silence hallucinations.
+ * - NEVER sends imperative AI instructions in `transcription.prompt` (only optional user glossary),
+ *   preventing prompt leakage into dictated text.
+ * - Properly awaits completion on finalize (`commitAndAwaitCompletion`).
  */
 class OpenAiRealtimeStreamEngine(
     private val keyStore: SecureKeyStore
@@ -88,6 +91,9 @@ class OpenAiRealtimeStreamEngine(
     private var activePrompt = ""
 
     @Volatile
+    private var activeCustomGlossary = ""
+
+    @Volatile
     private var uncommittedAudioBytes = 0
 
     private val inFlightTranscriptions = AtomicInteger(0)
@@ -104,9 +110,11 @@ class OpenAiRealtimeStreamEngine(
     val activeModelId: String
         get() = SESSION_PROFILES.getOrNull(currentProfileIndex)?.modelId ?: "gpt-4o-transcribe"
 
+    val currentPromptUsed: String
+        get() = activePrompt
+
     fun connect(
         customGlossary: String,
-        preferWritten: Boolean,
         listener: RealtimeTranscriptListener
     ): Boolean {
         val effectiveKey = keyStore.resolveEffectiveOpenAiKey()
@@ -117,10 +125,9 @@ class OpenAiRealtimeStreamEngine(
 
         disconnect()
 
-        activePrompt = CantonesePrompts.buildOpenAiPrompt(
-            customGlossary = customGlossary,
-            preferWritten = preferWritten
-        )
+        activeCustomGlossary = customGlossary
+        // Only pass clean non-instructional user glossary if present — never imperative instructions!
+        activePrompt = CantonesePrompts.buildOpenAiPrompt(customGlossary = customGlossary)
         currentProfileIndex = 0
         lastErrorMessage = null
 
@@ -134,9 +141,7 @@ class OpenAiRealtimeStreamEngine(
             object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
                     isSocketOpen = true
-                    Log.d(TAG, "OpenAI Realtime WebSocket opened; waiting for session.created")
-                    // Send initial session.update right away as well (some servers emit session.created
-                    // immediately; if session.created arrives we avoid duplicate sends via flag).
+                    Log.d(TAG, "OpenAI Realtime WebSocket opened; sending initial session.update")
                     sendProfileUpdate(webSocket)
                 }
 
@@ -249,7 +254,10 @@ class OpenAiRealtimeStreamEngine(
     private fun sendProfileUpdate(webSocket: WebSocket) {
         val profile = SESSION_PROFILES.getOrNull(currentProfileIndex) ?: return
         val payload = buildSessionUpdatePayload(profile, activePrompt)
-        Log.d(TAG, "Sending OpenAI session update: model=${profile.modelId}, serverVad=${profile.useServerVad}, legacy=${profile.legacyBetaSchema}")
+        Log.d(
+            TAG,
+            "Sending OpenAI session update: model=${profile.modelId}, serverVad=${profile.useServerVad}, nr=${profile.enableNoiseReduction}, legacy=${profile.legacyBetaSchema}"
+        )
         webSocket.send(payload)
     }
 
@@ -280,15 +288,16 @@ class OpenAiRealtimeStreamEngine(
 
     private fun buildSessionUpdatePayload(profile: RealtimeSessionProfile, prompt: String): String {
         if (profile.legacyBetaSchema) {
-            val transcriptionObj = JSONObject()
-                .put("model", profile.modelId)
-                .put("prompt", prompt)
+            val transcriptionObj = JSONObject().put("model", profile.modelId)
+            if (prompt.isNotBlank()) {
+                transcriptionObj.put("prompt", prompt)
+            }
             val turnDetection: Any = if (profile.useServerVad) {
                 JSONObject()
                     .put("type", "server_vad")
-                    .put("threshold", 0.4)
+                    .put("threshold", 0.5)
                     .put("prefix_padding_ms", 300)
-                    .put("silence_duration_ms", 420)
+                    .put("silence_duration_ms", 550)
             } else {
                 JSONObject.NULL
             }
@@ -296,6 +305,12 @@ class OpenAiRealtimeStreamEngine(
                 .put("input_audio_format", "pcm16")
                 .put("input_audio_transcription", transcriptionObj)
                 .put("turn_detection", turnDetection)
+            if (profile.enableNoiseReduction) {
+                sessionObj.put(
+                    "input_audio_noise_reduction",
+                    JSONObject().put("type", "near_field")
+                )
+            }
             return JSONObject()
                 .put("type", "transcription_session.update")
                 .put("session", sessionObj)
@@ -306,16 +321,17 @@ class OpenAiRealtimeStreamEngine(
             .put("type", "audio/pcm")
             .put("rate", 24000)
 
-        val transcriptionObj = JSONObject()
-            .put("model", profile.modelId)
-            .put("prompt", prompt)
+        val transcriptionObj = JSONObject().put("model", profile.modelId)
+        if (prompt.isNotBlank()) {
+            transcriptionObj.put("prompt", prompt)
+        }
 
         val turnDetection: Any = if (profile.useServerVad) {
             JSONObject()
                 .put("type", "server_vad")
-                .put("threshold", 0.4)
+                .put("threshold", 0.5)
                 .put("prefix_padding_ms", 300)
-                .put("silence_duration_ms", 420)
+                .put("silence_duration_ms", 550)
         } else {
             JSONObject.NULL
         }
@@ -324,6 +340,12 @@ class OpenAiRealtimeStreamEngine(
             .put("format", formatObj)
             .put("transcription", transcriptionObj)
             .put("turn_detection", turnDetection)
+        if (profile.enableNoiseReduction) {
+            inputObj.put(
+                "noise_reduction",
+                JSONObject().put("type", "near_field")
+            )
+        }
 
         val audioObj = JSONObject().put("input", inputObj)
 
@@ -370,9 +392,14 @@ class OpenAiRealtimeStreamEngine(
 
                 "conversation.item.input_audio_transcription.completed" -> {
                     val remaining = inFlightTranscriptions.updateAndGet { (it - 1).coerceAtLeast(0) }
-                    val completed = json.optString("transcript", "").trim()
-                    if (completed.isNotEmpty()) {
-                        listener.onSegmentCompleted(completed)
+                    val rawCompleted = json.optString("transcript", "").trim()
+                    val cleaned = TranscriptSanitizer.sanitizeSegment(
+                        rawText = rawCompleted,
+                        activePrompt = activePrompt,
+                        customGlossary = activeCustomGlossary
+                    )
+                    if (cleaned.isNotEmpty()) {
+                        listener.onSegmentCompleted(cleaned)
                     }
                     if (remaining == 0) {
                         pendingCompletion?.complete(true)
@@ -406,7 +433,7 @@ class OpenAiRealtimeStreamEngine(
                         return
                     }
 
-                    // If handshake hasn't succeeded yet, step to the next compatible session profile!
+                    // If handshake hasn't succeeded yet, step to the next compatible session profile
                     if (!isSessionReady && currentProfileIndex + 1 < SESSION_PROFILES.size) {
                         currentProfileIndex++
                         Log.w(TAG, "Retrying OpenAI Realtime session with profile #$currentProfileIndex (${activeModelId})")

@@ -6,12 +6,6 @@ import com.example.model.CantoneseFormat
 import com.example.model.DeepReviewResult
 import com.example.model.PreparedAudio
 import com.example.model.TranscriptionEngineId
-import com.google.firebase.Firebase
-import com.google.firebase.ai.ai
-import com.google.firebase.ai.type.ThinkingLevel
-import com.google.firebase.ai.type.content
-import com.google.firebase.ai.type.generationConfig
-import com.google.firebase.ai.type.thinkingConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
@@ -19,9 +13,27 @@ import org.json.JSONObject
 
 private const val TAG = "GeminiTranscriptionEngine"
 private const val INFERENCE_TIMEOUT_MS = 60_000L
-private const val DEFAULT_FLASH_MODEL = "gemini-3.8-flash"
-private const val DEFAULT_FAST_MODEL = "gemini-3.5-flash-lite"
-private const val DEFAULT_DEEP_MODEL = "gemini-4-argon"
+
+private val FULL_AUDIO_MODELS = listOf(
+    "gemini-2.5-flash",
+    "gemini-3.8-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-3.5-flash-lite"
+)
+
+private val FAST_DICTATION_MODELS = listOf(
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.8-flash"
+)
+
+private val DEEP_REVIEW_MODELS = listOf(
+    "gemini-2.5-pro",
+    "gemini-4-argon",
+    "gemini-2.5-flash",
+    "gemini-3.8-flash"
+)
 
 data class GeminiAudioOutput(
     val spokenCantonese: String,
@@ -32,120 +44,91 @@ data class GeminiAudioOutput(
 )
 
 /**
- * Dual-path Gemini transcription & Deep Review engine:
- * - **Default (Built-in)**: Uses Firebase AI Logic (`Firebase.ai` via App Check, zero API key needed).
- * - **Personal Key (BYOK)**: When the user saves & enables their own Gemini API key in Keys,
- *   routes directly to `generativelanguage.googleapis.com` so standalone exported APKs work
- *   without requiring Firebase App Check tokens.
+ * Direct Google Gemini API transcription & Deep Review engine.
+ *
+ * Exclusively uses the personal Gemini API key saved by the user in [SecureKeyStore]
+ * via [DirectGeminiRestClient] (`generativelanguage.googleapis.com`) — zero Firebase dependencies.
+ *
+ * Dictation enhancements per Gemini API documentation:
+ * - Top-level `systemInstruction` separating rules from user audio.
+ * - Deterministic `temperature = 0.0` to prevent creative drift/hallucinations.
+ * - `mediaResolution = "MEDIA_RESOLUTION_HIGH"` for WhatsApp/studio audio clarity.
+ * - `thinkingBudget = 0` on fast keyboard dictation for lowest latency.
+ * - Automatic model fallback with session memory of the first working model for your API key.
  */
 class GeminiTranscriptionEngine(
     private val keyStore: SecureKeyStore,
     private val directRestClient: DirectGeminiRestClient
 ) {
 
-    private val flashAudioModel by lazy {
-        Firebase.ai.generativeModel(
-            modelName = DEFAULT_FLASH_MODEL,
-            generationConfig = generationConfig {
-                temperature = 0.1f
-                responseMimeType = "application/json"
-                responseSchema = CantonesePrompts.audioTranscriptSchema
-            }
-        )
-    }
+    val isConfigured: Boolean
+        get() = keyStore.hasDirectGeminiKey()
 
-    private val liteAudioJsonModel by lazy {
-        Firebase.ai.generativeModel(
-            modelName = DEFAULT_FAST_MODEL,
-            generationConfig = generationConfig {
-                temperature = 0.1f
-                responseMimeType = "application/json"
-                responseSchema = CantonesePrompts.audioTranscriptSchema
-            }
-        )
-    }
+    @Volatile
+    private var preferredFlashModel: String? = null
 
-    private val fastDictationModel by lazy {
-        Firebase.ai.generativeModel(
-            modelName = DEFAULT_FAST_MODEL,
-            generationConfig = generationConfig {
-                temperature = 0.1f
-            }
-        )
-    }
-
-    private val flashDictationFallbackModel by lazy {
-        Firebase.ai.generativeModel(
-            modelName = DEFAULT_FLASH_MODEL,
-            generationConfig = generationConfig {
-                temperature = 0.1f
-            }
-        )
-    }
-
-    private val deepThinkingModel by lazy {
-        Firebase.ai.generativeModel(
-            modelName = DEFAULT_DEEP_MODEL,
-            generationConfig = generationConfig {
-                thinkingConfig = thinkingConfig {
-                    thinkingLevel = ThinkingLevel.HIGH
-                }
-                responseMimeType = "application/json"
-                responseSchema = CantonesePrompts.deepReviewSchema
-            }
-        )
-    }
+    @Volatile
+    private var preferredFastModel: String? = null
 
     suspend fun transcribeFullAudio(
         audio: PreparedAudio,
         includeWritten: Boolean,
         customGlossary: String
     ): Result<GeminiAudioOutput> {
+        val apiKey = keyStore.resolveDirectGeminiKey()
+            ?: return Result.failure(missingKeyException())
+
         val startedAt = System.currentTimeMillis()
-        val promptText = CantonesePrompts.buildGeminiAudioPrompt(
+        val systemInstruction = CantonesePrompts.buildGeminiAudioSystemInstruction(
             includeWritten = includeWritten,
             customGlossary = customGlossary
         )
-
-        val directKey = keyStore.resolveDirectGeminiKey()
-        if (directKey != null) {
-            return transcribeFullAudioDirect(
-                apiKey = directKey,
-                audio = audio,
-                promptText = promptText,
-                startedAt = startedAt
-            )
-        }
+        val userPrompt = CantonesePrompts.buildGeminiAudioUserPrompt()
+        val candidates = buildModelCandidates(
+            customModel = keyStore.resolveCustomGeminiModel(),
+            preferred = preferredFlashModel,
+            defaults = FULL_AUDIO_MODELS
+        )
 
         return try {
-            val response = withTimeout(INFERENCE_TIMEOUT_MS) {
-                try {
-                    flashAudioModel.generateContent(
-                        content("user") {
-                            inlineData(audio.bytes, audio.geminiMimeType)
-                            text(promptText)
-                        }
-                    )
-                } catch (primaryErr: Exception) {
-                    if (primaryErr is CancellationException) throw primaryErr
-                    Log.w(TAG, "Primary $DEFAULT_FLASH_MODEL failed; falling back to $DEFAULT_FAST_MODEL", primaryErr)
-                    liteAudioJsonModel.generateContent(
-                        content("user") {
-                            inlineData(audio.bytes, audio.geminiMimeType)
-                            text(promptText)
-                        }
+            var lastFailure: Result<String>? = null
+            for (modelName in candidates) {
+                val attempt = withTimeout(INFERENCE_TIMEOUT_MS) {
+                    directRestClient.generateContent(
+                        apiKey = apiKey,
+                        modelName = modelName,
+                        promptText = userPrompt,
+                        systemInstruction = systemInstruction,
+                        audioBytes = audio.bytes,
+                        audioMimeType = audio.geminiMimeType,
+                        temperature = 0.0f,
+                        responseJsonSchema = DirectGeminiRestClient.audioTranscriptRestSchema(),
+                        mediaResolution = "MEDIA_RESOLUTION_HIGH"
                     )
                 }
+                if (attempt.isSuccess) {
+                    preferredFlashModel = modelName
+                    return parseFullAudioResponse(
+                        rawJson = attempt.getOrNull()?.trim(),
+                        customGlossary = customGlossary,
+                        engineId = TranscriptionEngineId.GEMINI_DIRECT_FLASH,
+                        startedAt = startedAt
+                    )
+                }
+                lastFailure = attempt
+                val errMsg = attempt.exceptionOrNull()?.message.orEmpty()
+                if (!isModelFallbackError(errMsg)) {
+                    return Result.failure(attempt.exceptionOrNull() ?: IllegalStateException(errMsg))
+                }
+                Log.w(TAG, "Gemini model $modelName unavailable ($errMsg); trying next model.")
             }
-            parseFullAudioResponse(
-                rawJson = response.text?.trim(),
-                engineId = TranscriptionEngineId.GEMINI_FLASH,
-                startedAt = startedAt
+            Result.failure(
+                lastFailure?.exceptionOrNull() ?: IllegalStateException("Gemini transcription failed.")
             )
         } catch (e: TimeoutCancellationException) {
             Log.e(TAG, "Gemini audio transcription timed out", e)
             Result.failure(
-                IllegalStateException("Gemini transcription timed out after 60 seconds. Try a shorter clip or retry.")
+                IllegalStateException("Gemini API transcription timed out after 60 seconds. Try a shorter clip or retry.")
             )
         } catch (e: CancellationException) {
             throw e
@@ -160,139 +143,116 @@ class GeminiTranscriptionEngine(
         format: CantoneseFormat,
         customGlossary: String
     ): Result<GeminiAudioOutput> {
-        val startedAt = System.currentTimeMillis()
-        val promptText = CantonesePrompts.buildFastKeyboardPrompt(format, customGlossary)
-        val isWritten = format == CantoneseFormat.WRITTEN_CHINESE
+        val apiKey = keyStore.resolveDirectGeminiKey()
+            ?: return Result.failure(missingKeyException())
 
-        val directKey = keyStore.resolveDirectGeminiKey()
-        if (directKey != null) {
-            val candidates = buildList {
-                keyStore.resolveCustomGeminiModel()?.let { add(it) }
-                add(DEFAULT_FAST_MODEL)
-                add(DEFAULT_FLASH_MODEL)
-            }.distinct()
-            return try {
-                var lastResult: Result<String>? = null
-                for (modelName in candidates) {
-                    val attempt = withTimeout(INFERENCE_TIMEOUT_MS) {
-                        directRestClient.generateContent(
-                            apiKey = directKey,
-                            modelName = modelName,
-                            promptText = promptText,
-                            audioBytes = audio.bytes,
-                            audioMimeType = audio.geminiMimeType,
-                            temperature = 0.1f
-                        )
-                    }
-                    if (attempt.isSuccess && !attempt.getOrNull()?.trim().isNullOrEmpty()) {
-                        lastResult = attempt
-                        break
-                    }
-                    lastResult = attempt
-                }
-                (lastResult ?: Result.failure(IllegalStateException("Gemini Direct dictation failed."))).map { raw ->
-                    val text = raw.trim()
-                    GeminiAudioOutput(
-                        spokenCantonese = text,
-                        writtenChinese = if (isWritten) text else null,
-                        detectedLanguageMix = "Cantonese (Direct Key)",
-                        engineId = TranscriptionEngineId.GEMINI_DIRECT_LITE,
-                        latencyMillis = System.currentTimeMillis() - startedAt
-                    )
-                }
-            } catch (e: TimeoutCancellationException) {
-                Result.failure(IllegalStateException("Live voice dictation timed out. Please try again."))
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Result.failure(e)
-            }
-        }
+        val startedAt = System.currentTimeMillis()
+        val systemInstruction = CantonesePrompts.buildFastKeyboardSystemInstruction(format, customGlossary)
+        val userPrompt = CantonesePrompts.buildFastKeyboardUserPrompt()
+        val isWritten = format == CantoneseFormat.WRITTEN_CHINESE
+        val candidates = buildModelCandidates(
+            customModel = keyStore.resolveCustomGeminiModel(),
+            preferred = preferredFastModel,
+            defaults = FAST_DICTATION_MODELS
+        )
 
         return try {
-            val response = withTimeout(INFERENCE_TIMEOUT_MS) {
-                try {
-                    fastDictationModel.generateContent(
-                        content("user") {
-                            inlineData(audio.bytes, audio.geminiMimeType)
-                            text(promptText)
-                        }
-                    )
-                } catch (primaryErr: Exception) {
-                    if (primaryErr is CancellationException) throw primaryErr
-                    Log.w(TAG, "Fast dictation $DEFAULT_FAST_MODEL failed; retrying with $DEFAULT_FLASH_MODEL", primaryErr)
-                    flashDictationFallbackModel.generateContent(
-                        content("user") {
-                            inlineData(audio.bytes, audio.geminiMimeType)
-                            text(promptText)
-                        }
+            var lastFailure: Result<String>? = null
+            for (modelName in candidates) {
+                val attempt = withTimeout(INFERENCE_TIMEOUT_MS) {
+                    directRestClient.generateContent(
+                        apiKey = apiKey,
+                        modelName = modelName,
+                        promptText = userPrompt,
+                        systemInstruction = systemInstruction,
+                        audioBytes = audio.bytes,
+                        audioMimeType = audio.geminiMimeType,
+                        temperature = 0.0f,
+                        disableThinking = true
                     )
                 }
+                if (attempt.isSuccess) {
+                    preferredFastModel = modelName
+                    val text = TranscriptSanitizer.sanitizeSegment(
+                        rawText = attempt.getOrNull().orEmpty(),
+                        customGlossary = customGlossary
+                    )
+                    if (text.isEmpty()) {
+                        return Result.failure(IllegalStateException("No clear speech detected in audio."))
+                    }
+                    return Result.success(
+                        GeminiAudioOutput(
+                            spokenCantonese = text,
+                            writtenChinese = if (isWritten) text else null,
+                            detectedLanguageMix = "Cantonese (Gemini API)",
+                            engineId = TranscriptionEngineId.GEMINI_DIRECT_LITE,
+                            latencyMillis = System.currentTimeMillis() - startedAt
+                        )
+                    )
+                }
+                lastFailure = attempt
+                val errMsg = attempt.exceptionOrNull()?.message.orEmpty()
+                if (!isModelFallbackError(errMsg)) {
+                    return Result.failure(attempt.exceptionOrNull() ?: IllegalStateException(errMsg))
+                }
+                Log.w(TAG, "Fast dictation model $modelName unavailable ($errMsg); trying next model.")
             }
-            val text = response.text?.trim().orEmpty()
-            if (text.isEmpty()) {
-                return Result.failure(IllegalStateException("Gemini returned empty dictation text."))
-            }
-            Result.success(
-                GeminiAudioOutput(
-                    spokenCantonese = text,
-                    writtenChinese = if (isWritten) text else null,
-                    detectedLanguageMix = "Cantonese (Fast)",
-                    engineId = TranscriptionEngineId.GEMINI_FLASH_LITE,
-                    latencyMillis = System.currentTimeMillis() - startedAt
-                )
+            Result.failure(
+                lastFailure?.exceptionOrNull() ?: IllegalStateException("Gemini dictation failed.")
             )
         } catch (e: TimeoutCancellationException) {
-            Log.e(TAG, "Gemini fast dictation timed out", e)
             Result.failure(IllegalStateException("Live voice dictation timed out. Please try again."))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "Gemini fast dictation failed", e)
             Result.failure(e)
         }
     }
 
     suspend fun convertSpokenToWritten(spokenCantonese: String): Result<String> {
-        val prompt = CantonesePrompts.buildSpokenToWrittenPrompt(spokenCantonese)
-        val directKey = keyStore.resolveDirectGeminiKey()
-        if (directKey != null) {
-            val modelName = keyStore.resolveCustomGeminiModel() ?: DEFAULT_FAST_MODEL
-            return try {
-                withTimeout(INFERENCE_TIMEOUT_MS) {
-                    directRestClient.generateContent(
-                        apiKey = directKey,
-                        modelName = modelName,
-                        promptText = prompt,
-                        temperature = 0.1f
-                    )
-                }.map { it.trim() }
-            } catch (e: TimeoutCancellationException) {
-                Result.failure(IllegalStateException("Conversion timed out. Please retry."))
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Result.failure(e)
-            }
-        }
+        val apiKey = keyStore.resolveDirectGeminiKey()
+            ?: return Result.failure(missingKeyException())
+
+        val systemInstruction = CantonesePrompts.buildSpokenToWrittenSystemInstruction()
+        val userPrompt = CantonesePrompts.buildSpokenToWrittenUserPrompt(spokenCantonese)
+        val candidates = buildModelCandidates(
+            customModel = keyStore.resolveCustomGeminiModel(),
+            preferred = preferredFastModel,
+            defaults = FAST_DICTATION_MODELS
+        )
 
         return try {
-            val response = withTimeout(INFERENCE_TIMEOUT_MS) {
-                fastDictationModel.generateContent(prompt)
+            var lastFailure: Result<String>? = null
+            for (modelName in candidates) {
+                val attempt = withTimeout(INFERENCE_TIMEOUT_MS) {
+                    directRestClient.generateContent(
+                        apiKey = apiKey,
+                        modelName = modelName,
+                        promptText = userPrompt,
+                        systemInstruction = systemInstruction,
+                        temperature = 0.1f,
+                        disableThinking = true
+                    )
+                }
+                if (attempt.isSuccess) {
+                    preferredFastModel = modelName
+                    val converted = attempt.getOrNull()?.trim().orEmpty()
+                    if (converted.isNotEmpty()) return Result.success(converted)
+                }
+                lastFailure = attempt
+                val errMsg = attempt.exceptionOrNull()?.message.orEmpty()
+                if (!isModelFallbackError(errMsg)) {
+                    return Result.failure(attempt.exceptionOrNull() ?: IllegalStateException(errMsg))
+                }
             }
-            val converted = response.text?.trim().orEmpty()
-            if (converted.isEmpty()) {
-                Result.failure(IllegalStateException("Empty Written Chinese conversion response."))
-            } else {
-                Result.success(converted)
-            }
+            Result.failure(
+                lastFailure?.exceptionOrNull() ?: IllegalStateException("Empty Written Chinese conversion response.")
+            )
         } catch (e: TimeoutCancellationException) {
-            Log.e(TAG, "Spoken-to-written conversion timed out", e)
             Result.failure(IllegalStateException("Conversion timed out. Please retry."))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "Spoken-to-written conversion failed", e)
             Result.failure(e)
         }
     }
@@ -303,164 +263,58 @@ class GeminiTranscriptionEngine(
         audioContext: PreparedAudio?,
         customGlossary: String
     ): Result<DeepReviewResult> {
+        val apiKey = keyStore.resolveDirectGeminiKey()
+            ?: return Result.failure(missingKeyException())
+
         val startedAt = System.currentTimeMillis()
-        val promptText = CantonesePrompts.buildDeepReviewPrompt(
+        val systemInstruction = CantonesePrompts.buildDeepReviewSystemInstruction(customGlossary)
+        val userPrompt = CantonesePrompts.buildDeepReviewUserPrompt(
             spokenCantonese = spokenCantonese,
-            writtenChinese = writtenChinese,
-            customGlossary = customGlossary
+            writtenChinese = writtenChinese
         )
         val attachableAudio = audioContext?.takeIf { it.sizeBytes <= 10L * 1024L * 1024L }
-
-        val directKey = keyStore.resolveDirectGeminiKey()
-        if (directKey != null) {
-            return deepReviewDirect(
-                apiKey = directKey,
-                promptText = promptText,
-                audioContext = attachableAudio,
-                spokenCantonese = spokenCantonese,
-                writtenChinese = writtenChinese,
-                startedAt = startedAt
-            )
-        }
+        val customModel = keyStore.resolveCustomGeminiModel()
+        val candidates = buildModelCandidates(
+            customModel = customModel,
+            preferred = null,
+            defaults = DEEP_REVIEW_MODELS
+        )
 
         return try {
-            val response = withTimeout(INFERENCE_TIMEOUT_MS) {
-                if (attachableAudio != null) {
-                    deepThinkingModel.generateContent(
-                        content("user") {
-                            inlineData(attachableAudio.bytes, attachableAudio.geminiMimeType)
-                            text(promptText)
-                        }
-                    )
-                } else {
-                    deepThinkingModel.generateContent(promptText)
-                }
-            }
-            parseDeepReviewResponse(
-                rawJson = response.text?.trim(),
-                spokenCantonese = spokenCantonese,
-                writtenChinese = writtenChinese,
-                startedAt = startedAt
-            )
-        } catch (e: TimeoutCancellationException) {
-            Log.e(TAG, "Gemini Deep Review timed out", e)
-            Result.failure(
-                IllegalStateException("Deep Review timed out after 60 seconds. Please try again.")
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e(TAG, "Gemini Deep Review failed", e)
-            Result.failure(e)
-        }
-    }
-
-    private suspend fun transcribeFullAudioDirect(
-        apiKey: String,
-        audio: PreparedAudio,
-        promptText: String,
-        startedAt: Long
-    ): Result<GeminiAudioOutput> {
-        val candidates = buildList {
-            keyStore.resolveCustomGeminiModel()?.let { add(it) }
-            add(DEFAULT_FLASH_MODEL)
-            add(DEFAULT_FAST_MODEL)
-        }.distinct()
-        return try {
-            var lastResult: Result<String>? = null
+            var lastFailure: Result<String>? = null
             for (modelName in candidates) {
+                val useHighThinking = modelName.contains("pro", ignoreCase = true) ||
+                    modelName.contains("argon", ignoreCase = true)
                 val attempt = withTimeout(INFERENCE_TIMEOUT_MS) {
                     directRestClient.generateContent(
                         apiKey = apiKey,
                         modelName = modelName,
-                        promptText = promptText,
-                        audioBytes = audio.bytes,
-                        audioMimeType = audio.geminiMimeType,
-                        temperature = 0.1f,
-                        responseJsonSchema = DirectGeminiRestClient.audioTranscriptRestSchema()
+                        promptText = userPrompt,
+                        systemInstruction = systemInstruction,
+                        audioBytes = attachableAudio?.bytes,
+                        audioMimeType = attachableAudio?.geminiMimeType,
+                        temperature = if (useHighThinking) null else 0.1f,
+                        responseJsonSchema = DirectGeminiRestClient.deepReviewRestSchema(),
+                        enableHighThinking = useHighThinking
                     )
                 }
                 if (attempt.isSuccess) {
-                    lastResult = attempt
-                    break
-                }
-                lastResult = attempt
-            }
-            (lastResult ?: Result.failure(IllegalStateException("Gemini Direct transcription failed."))).fold(
-                onSuccess = { raw ->
-                    parseFullAudioResponse(
-                        rawJson = raw.trim(),
-                        engineId = TranscriptionEngineId.GEMINI_DIRECT_FLASH,
-                        startedAt = startedAt
-                    )
-                },
-                onFailure = { Result.failure(it) }
-            )
-        } catch (e: TimeoutCancellationException) {
-            Result.failure(IllegalStateException("Gemini API transcription timed out after 60 seconds."))
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-    }
-
-    private suspend fun deepReviewDirect(
-        apiKey: String,
-        promptText: String,
-        audioContext: PreparedAudio?,
-        spokenCantonese: String,
-        writtenChinese: String?,
-        startedAt: Long
-    ): Result<DeepReviewResult> {
-        val customModel = keyStore.resolveCustomGeminiModel()
-        val primaryModel = customModel ?: DEFAULT_DEEP_MODEL
-        return try {
-            val primaryResult = withTimeout(INFERENCE_TIMEOUT_MS) {
-                directRestClient.generateContent(
-                    apiKey = apiKey,
-                    modelName = primaryModel,
-                    promptText = promptText,
-                    audioBytes = audioContext?.bytes,
-                    audioMimeType = audioContext?.geminiMimeType,
-                    temperature = null,
-                    responseJsonSchema = DirectGeminiRestClient.deepReviewRestSchema(),
-                    enableHighThinking = customModel == null
-                )
-            }
-
-            val finalResult = if (primaryResult.isFailure && customModel == null) {
-                val msg = primaryResult.exceptionOrNull()?.message.orEmpty()
-                if (msg.contains("404") || msg.contains("not found", ignoreCase = true) || msg.contains("thinking", ignoreCase = true)) {
-                    withTimeout(INFERENCE_TIMEOUT_MS) {
-                        directRestClient.generateContent(
-                            apiKey = apiKey,
-                            modelName = DEFAULT_FLASH_MODEL,
-                            promptText = promptText,
-                            audioBytes = audioContext?.bytes,
-                            audioMimeType = audioContext?.geminiMimeType,
-                            temperature = 0.2f,
-                            responseJsonSchema = DirectGeminiRestClient.deepReviewRestSchema(),
-                            enableHighThinking = false
-                        )
-                    }
-                } else {
-                    primaryResult
-                }
-            } else {
-                primaryResult
-            }
-
-            finalResult.fold(
-                onSuccess = { raw ->
-                    parseDeepReviewResponse(
-                        rawJson = raw.trim(),
+                    return parseDeepReviewResponse(
+                        rawJson = attempt.getOrNull()?.trim(),
                         spokenCantonese = spokenCantonese,
                         writtenChinese = writtenChinese,
                         startedAt = startedAt
                     )
-                },
-                onFailure = { Result.failure(it) }
+                }
+                lastFailure = attempt
+                val errMsg = attempt.exceptionOrNull()?.message.orEmpty()
+                if (!isModelFallbackError(errMsg)) {
+                    return Result.failure(attempt.exceptionOrNull() ?: IllegalStateException(errMsg))
+                }
+                Log.w(TAG, "Deep Review model $modelName unavailable ($errMsg); trying next model.")
+            }
+            Result.failure(
+                lastFailure?.exceptionOrNull() ?: IllegalStateException("Deep Review failed.")
             )
         } catch (e: TimeoutCancellationException) {
             Result.failure(IllegalStateException("Deep Review timed out after 60 seconds. Please try again."))
@@ -471,8 +325,30 @@ class GeminiTranscriptionEngine(
         }
     }
 
+    private fun buildModelCandidates(
+        customModel: String?,
+        preferred: String?,
+        defaults: List<String>
+    ): List<String> = buildList {
+        customModel?.takeIf { it.isNotBlank() }?.let { add(it) }
+        preferred?.takeIf { it.isNotBlank() }?.let { add(it) }
+        addAll(defaults)
+    }.distinct()
+
+    private fun isModelFallbackError(errMsg: String): Boolean {
+        return errMsg.contains("(404)") ||
+            errMsg.contains("not found", ignoreCase = true) ||
+            errMsg.contains("is not supported", ignoreCase = true) ||
+            errMsg.contains("model", ignoreCase = true) && errMsg.contains("(400)")
+    }
+
+    private fun missingKeyException(): IllegalStateException = IllegalStateException(
+        "Gemini API key is not configured. Add and save your Gemini API key in the Keys tab."
+    )
+
     private fun parseFullAudioResponse(
         rawJson: String?,
+        customGlossary: String,
         engineId: TranscriptionEngineId,
         startedAt: Long
     ): Result<GeminiAudioOutput> {
@@ -480,12 +356,20 @@ class GeminiTranscriptionEngine(
             return Result.failure(IllegalStateException("Gemini returned an empty transcript response."))
         }
         val json = JSONObject(rawJson)
-        val spoken = json.optString("spokenCantonese", "").trim()
-        val written = json.optString("writtenChinese", "").trim().takeIf { it.isNotEmpty() }
+        val rawSpoken = json.optString("spokenCantonese", "").trim()
+        val spoken = TranscriptSanitizer.sanitizeSegment(
+            rawText = rawSpoken,
+            customGlossary = customGlossary
+        )
+        val rawWritten = json.optString("writtenChinese", "").trim()
+        val written = TranscriptSanitizer.sanitizeSegment(
+            rawText = rawWritten,
+            customGlossary = customGlossary
+        ).takeIf { it.isNotEmpty() }
         val langMix = json.optString("detectedLanguageMix", "Cantonese").ifBlank { "Cantonese" }
 
         if (spoken.isEmpty()) {
-            return Result.failure(IllegalStateException("Gemini returned an empty Cantonese transcript."))
+            return Result.failure(IllegalStateException("No clear Cantonese speech detected in audio."))
         }
 
         return Result.success(

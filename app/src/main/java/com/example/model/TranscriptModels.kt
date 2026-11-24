@@ -48,13 +48,13 @@ data class ApiKeyStatus(
     val hasBuildOpenAiKey: Boolean = false
 ) {
     val isUsingDirectGemini: Boolean
-        get() = hasUserGeminiKey && usePersonalGeminiKey
+        get() = hasUserGeminiKey
 
     val isOpenAiConfigured: Boolean
         get() = hasUserOpenAiKey || hasBuildOpenAiKey
 
     val geminiProviderLabel: String
-        get() = if (isUsingDirectGemini) "Personal Key · Direct" else "Firebase AI Logic"
+        get() = if (hasUserGeminiKey) "Personal Key" else "Not Set"
 
     val openAiProviderLabel: String
         get() = when {

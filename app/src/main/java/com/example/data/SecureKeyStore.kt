@@ -116,12 +116,14 @@ class SecureKeyStore(appContext: Context) {
     }
 
     /**
-     * Returns the user's personal Gemini API key when saved and enabled, or null to use Firebase AI Logic.
+     * Returns the user's saved Gemini API key (encrypted locally with Android Keystore).
+     * Never falls back to Firebase.
      */
     fun resolveDirectGeminiKey(): String? {
-        if (!prefs.getBoolean(KEY_USE_PERSONAL_GEMINI, true)) return null
         return readDecrypted(KEY_GEMINI_ENC)?.takeIf { it.isNotBlank() }
     }
+
+    fun hasDirectGeminiKey(): Boolean = !resolveDirectGeminiKey().isNullOrBlank()
 
     fun resolveCustomGeminiModel(): String? {
         return prefs.getString(KEY_CUSTOM_GEMINI_MODEL, null)?.trim()?.takeIf { it.isNotBlank() }

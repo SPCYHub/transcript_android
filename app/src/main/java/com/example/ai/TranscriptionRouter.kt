@@ -10,22 +10,23 @@ import com.example.model.TranscriptRecord
 import com.example.model.UserPreferences
 
 /**
- * Efficiency-first transcription coordinator routing across Gemini (Firebase AI Logic)
- * and OpenAI (`/v1/audio/transcriptions`).
+ * Efficiency-first transcription coordinator routing across the user's saved Direct Gemini API
+ * (`generativelanguage.googleapis.com`) and OpenAI (`/v1/audio/transcriptions`).
  *
  * Optimization highlights:
  * - Instant 0ms SHA-256 session deduplication cache.
  * - Pre-flight VAD silence check to avoid empty API round trips.
- * - Smart Auto-Routing: short live keyboard bursts prioritize fast low-latency dictation
- *   (`gpt-transcribe` when configured or `gemini-3.5-flash-lite`); WhatsApp `.opus`/`.ogg`
- *   shares and studio audio route to `gemini-3.8-flash` for single-pass Spoken + Written output,
- *   with transparent cross-engine failover.
+ * - Smart Auto-Routing based on whichever personal API keys the user has saved, with transparent
+ *   cross-engine failover when both keys are configured.
  */
 class TranscriptionRouter(
     private val geminiEngine: GeminiTranscriptionEngine,
     private val openAiEngine: OpenAiTranscriptionEngine,
     private val sessionStore: SessionTranscriptStore
 ) {
+
+    val isGeminiReady: Boolean
+        get() = geminiEngine.isConfigured
 
     val isOpenAiReady: Boolean
         get() = openAiEngine.isConfigured
@@ -36,17 +37,19 @@ class TranscriptionRouter(
     ): String {
         return when (routingMode) {
             RoutingMode.GEMINI_ONLY ->
-                if (sourceType == AudioSourceType.KEYBOARD_LIVE) "Gemini 3.5 Lite" else "Gemini 3.8 Flash"
-            RoutingMode.OPENAI_ONLY ->
-                if (isOpenAiReady) "OpenAI gpt-transcribe" else "OpenAI (Key Needed)"
-            RoutingMode.AUTO -> {
-                if (sourceType == AudioSourceType.KEYBOARD_LIVE && isOpenAiReady) {
-                    "Auto -> OpenAI gpt-transcribe"
-                } else if (sourceType == AudioSourceType.KEYBOARD_LIVE) {
-                    "Auto -> Gemini 3.5 Lite"
+                if (isGeminiReady) {
+                    if (sourceType == AudioSourceType.KEYBOARD_LIVE) "Gemini Direct Lite" else "Gemini Direct API"
                 } else {
-                    "Auto -> Gemini 3.8 Flash"
+                    "Gemini (Key Needed)"
                 }
+            RoutingMode.OPENAI_ONLY ->
+                if (isOpenAiReady) "OpenAI gpt-4o-transcribe" else "OpenAI (Key Needed)"
+            RoutingMode.AUTO -> when {
+                sourceType == AudioSourceType.KEYBOARD_LIVE && isOpenAiReady -> "Auto -> OpenAI gpt-4o-transcribe"
+                isGeminiReady && sourceType == AudioSourceType.KEYBOARD_LIVE -> "Auto -> Gemini Direct Lite"
+                isGeminiReady -> "Auto -> Gemini Direct API"
+                isOpenAiReady -> "Auto -> OpenAI gpt-4o-transcribe"
+                else -> "API Key Needed (Keys Tab)"
             }
         }
     }
@@ -125,14 +128,21 @@ class TranscriptionRouter(
         audio: PreparedAudio,
         preferences: UserPreferences
     ): Result<TranscriptRecord> {
+        if (!isGeminiReady && !isOpenAiReady) {
+            return Result.failure(
+                IllegalStateException(
+                    "No API key configured. Add your Gemini or OpenAI API key in the Keys tab."
+                )
+            )
+        }
+
         val isShortKeyboardBurst = audio.sourceType == AudioSourceType.KEYBOARD_LIVE &&
             audio.durationMillis in 0L..20_000L
 
-        // Short live keyboard bursts use OpenAI gpt-transcribe when configured (fast raw dictation),
-        // with automatic fallback to Gemini 3.5 Lite.
-        if (isShortKeyboardBurst && isOpenAiReady) {
+        // Short live keyboard bursts use OpenAI when configured, or route straight to OpenAI if Gemini key isn't set.
+        if ((isShortKeyboardBurst && isOpenAiReady) || (!isGeminiReady && isOpenAiReady)) {
             val openAiResult = runOpenAi(audio, preferences, fallbackNote = null)
-            if (openAiResult.isSuccess) return openAiResult
+            if (openAiResult.isSuccess || !isGeminiReady) return openAiResult
 
             val err = openAiResult.exceptionOrNull()?.message ?: "OpenAI unavailable"
             return runGemini(
@@ -142,8 +152,7 @@ class TranscriptionRouter(
             )
         }
 
-        // WhatsApp shares, studio recordings, and long files route to Gemini 3.8 Flash for
-        // single-pass Spoken + Written Cantonese structured output and native Opus/OGG decoding.
+        // WhatsApp shares, studio recordings, and long files route to Direct Gemini API first.
         val geminiResult = runGemini(audio, preferences, fallbackNote = null)
         if (geminiResult.isSuccess) return geminiResult
 
@@ -202,13 +211,9 @@ class TranscriptionRouter(
         preferences: UserPreferences,
         fallbackNote: String?
     ): Result<TranscriptRecord> {
-        val preferWritten = audio.sourceType == AudioSourceType.KEYBOARD_LIVE &&
-            preferences.defaultFormat == CantoneseFormat.WRITTEN_CHINESE
-
         return openAiEngine.transcribe(
             audio = audio,
-            customGlossary = preferences.customGlossary,
-            preferWritten = preferWritten
+            customGlossary = preferences.customGlossary
         ).map { out ->
             TranscriptRecord(
                 sourceType = audio.sourceType,
@@ -218,7 +223,7 @@ class TranscriptionRouter(
                 audioSizeBytes = audio.sizeBytes,
                 audioSha256 = audio.sha256,
                 spokenCantonese = out.text,
-                writtenChinese = if (preferWritten) out.text else null,
+                writtenChinese = null,
                 detectedLanguageMix = "Cantonese (OpenAI)",
                 engineUsed = out.engineId,
                 latencyMillis = out.latencyMillis,

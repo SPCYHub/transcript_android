@@ -4,25 +4,7 @@ import android.util.Base64
 import android.util.Log
 import com.example.data.SecureKeyStore
 import com.example.model.CantoneseFormat
-import com.google.firebase.Firebase
-import com.google.firebase.ai.ai
-import com.google.firebase.ai.type.AudioTranscriptionConfig
-import com.google.firebase.ai.type.InlineData
-import com.google.firebase.ai.type.LiveServerContent
-import com.google.firebase.ai.type.LiveSession
-import com.google.firebase.ai.type.PublicPreviewAPI
-import com.google.firebase.ai.type.ResponseModality
-import com.google.firebase.ai.type.TextPart
-import com.google.firebase.ai.type.content
-import com.google.firebase.ai.type.liveGenerationConfig
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -35,7 +17,8 @@ import java.util.concurrent.TimeUnit
 
 private const val TAG = "GeminiLiveStreamEngine"
 private const val PRIMARY_TRANSCRIBE_LIVE_MODEL = "gemini-3.5-transcribe-live"
-private const val FALLBACK_LIVE_MODEL = "gemini-3.1-flash-live-preview"
+private const val FALLBACK_LIVE_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+private const val SECONDARY_LIVE_MODEL = "gemini-3.1-flash-live-preview"
 private const val GEMINI_BIDI_WS_BASE =
     "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 private const val MAX_PRE_CONNECT_PCM_BYTES = 16_000 * 2 * 5 // 5s at 16kHz PCM16
@@ -43,36 +26,39 @@ private const val MAX_PRE_CONNECT_PCM_BYTES = 16_000 * 2 * 5 // 5s at 16kHz PCM1
 private data class DirectLiveProfile(
     val modelName: String,
     val isDedicatedTranscribeModel: Boolean,
-    val includeLanguageHint: Boolean
+    val includeLanguageHint: Boolean,
+    val includeVadTuning: Boolean
 )
 
 interface GeminiLiveTranscriptListener {
     fun onSessionReady(modelName: String, isDirectKey: Boolean)
-    /** Replaces the live partial hypothesis (e.g. `interimInputTranscription` from `gemini-3.5-transcribe-live`). */
+    /** Replaces the live partial hypothesis (e.g. `interimInputTranscription`). */
     fun onInterimTranscript(text: String)
-    /** Commits a finalized utterance segment (e.g. `inputTranscription` from `gemini-3.5-transcribe-live`). */
+    /** Commits a finalized utterance segment (e.g. `inputTranscription`). */
     fun onFinalTranscript(text: String)
-    /** Streams incremental delta chunks (e.g. `modelTurn.parts` or fallback `gemini-3.1-flash-live-preview`). */
+    /** Streams incremental delta chunks. */
     fun onDeltaTranscript(delta: String, isTurnFinished: Boolean)
     fun onError(message: String)
     fun onClosed()
 }
 
 /**
- * Dedicated real-time streaming speech-to-text client powered by Google's **`gemini-3.5-transcribe-live`**
- * (with automatic fallback to `gemini-3.1-flash-live-preview` if needed):
+ * Direct full-duplex streaming Gemini Live API (`BidiGenerateContent` WebSocket) client.
  *
- * - **Built-in Firebase AI Logic**: Uses `Firebase.ai.liveModel("gemini-3.5-transcribe-live")` with
- *   `ResponseModality.TEXT` + `AudioTranscriptionConfig()`, streaming raw 16kHz PCM16 audio via
- *   `sendAudioRealtime(InlineData(...))`.
- * - **Personal Gemini API Key (BYOK)**: Connects directly to `BidiGenerateContent` WebSocket with
- *   `models/gemini-3.5-transcribe-live`, `responseModalities: ["TEXT"]`, and Cantonese `yue-Hant-HK`
- *   biasing, handling `interimInputTranscription`, `inputTranscription`, and `modelTurn` text streams.
+ * Exclusively uses the user's personal Gemini API key saved in [SecureKeyStore] (no Firebase).
+ * Implements official Gemini Live API optimizations:
+ * - `realtimeInputConfig.automaticActivityDetection` tuned for crisp Cantonese voice dictation
+ *   (`START_SENSITIVITY_HIGH`, `END_SENSITIVITY_HIGH`, `prefixPaddingMs = 200`, `silenceDurationMs = 500`).
+ * - `inputAudioTranscription` with `yue-Hant-HK` language hint and graceful fallback if a model
+ *   uses a simpler schema.
+ * - Automatic profile fallback across dedicated transcribe-live and native-audio live models.
  */
-@OptIn(PublicPreviewAPI::class)
 class GeminiLiveStreamEngine(
     private val keyStore: SecureKeyStore
 ) {
+
+    val isConfigured: Boolean
+        get() = keyStore.hasDirectGeminiKey()
 
     private val wsClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -87,9 +73,6 @@ class GeminiLiveStreamEngine(
     private var pendingPcmBytes = 0
 
     @Volatile
-    private var isDirectWsMode = false
-
-    @Volatile
     private var isReady = false
 
     @Volatile
@@ -98,89 +81,67 @@ class GeminiLiveStreamEngine(
     @Volatile
     private var lastTranscriptReceivedAtMs = 0L
 
-    // Direct WebSocket state
     private var activeSocket: WebSocket? = null
     private var activeDirectProfiles: List<DirectLiveProfile> = emptyList()
     private var activeDirectProfileIndex = 0
     private var activeDirectApiKey = ""
+    private var activeCustomGlossary = ""
     private var activeFallbackSystemPrompt = ""
     private var activeDirectListener: GeminiLiveTranscriptListener? = null
 
-    // Firebase AI Logic LiveSession state
-    private var activeFirebaseSession: LiveSession? = null
-    private var firebaseConnectJob: Job? = null
-    private var firebaseReceiveJob: Job? = null
-    private var firebaseSendJob: Job? = null
-    private var firebaseAudioQueue: Channel<ByteArray>? = null
-
     fun connect(
-        scope: CoroutineScope,
         format: CantoneseFormat,
         customGlossary: String,
         listener: GeminiLiveTranscriptListener
-    ) {
+    ): Boolean {
         disconnect()
+
+        val directKey = keyStore.resolveDirectGeminiKey()
+        if (directKey.isNullOrBlank()) {
+            listener.onError("Gemini API key is not configured. Add and save your Gemini API key in the Keys tab.")
+            return false
+        }
+
         isClosed = false
         isReady = false
         lastTranscriptReceivedAtMs = 0L
+        activeCustomGlossary = customGlossary
+        activeFallbackSystemPrompt = buildFallbackLiveSystemInstruction(format, customGlossary)
 
-        val directKey = keyStore.resolveDirectGeminiKey()
-        val fallbackSystemPrompt = buildFallbackLiveSystemInstruction(format, customGlossary)
-
-        if (directKey != null) {
-            isDirectWsMode = true
-            val primaryModel = resolvePrimaryLiveModel(keyStore.resolveCustomGeminiModel())
-            val isDedicated = primaryModel.contains("transcribe", ignoreCase = true)
-            activeDirectProfiles = buildList {
-                if (isDedicated) {
-                    add(DirectLiveProfile(primaryModel, isDedicatedTranscribeModel = true, includeLanguageHint = true))
-                    add(DirectLiveProfile(primaryModel, isDedicatedTranscribeModel = true, includeLanguageHint = false))
-                    add(DirectLiveProfile(FALLBACK_LIVE_MODEL, isDedicatedTranscribeModel = false, includeLanguageHint = false))
-                } else {
-                    add(DirectLiveProfile(primaryModel, isDedicatedTranscribeModel = false, includeLanguageHint = false))
-                    add(DirectLiveProfile(PRIMARY_TRANSCRIBE_LIVE_MODEL, isDedicatedTranscribeModel = true, includeLanguageHint = false))
-                }
+        val primaryModel = resolvePrimaryLiveModel(keyStore.resolveCustomGeminiModel())
+        val isDedicated = primaryModel.contains("transcribe", ignoreCase = true)
+        activeDirectProfiles = buildList {
+            if (isDedicated) {
+                add(DirectLiveProfile(primaryModel, isDedicatedTranscribeModel = true, includeLanguageHint = true, includeVadTuning = true))
+                add(DirectLiveProfile(primaryModel, isDedicatedTranscribeModel = true, includeLanguageHint = false, includeVadTuning = false))
+                add(DirectLiveProfile(FALLBACK_LIVE_MODEL, isDedicatedTranscribeModel = false, includeLanguageHint = false, includeVadTuning = true))
+                add(DirectLiveProfile(SECONDARY_LIVE_MODEL, isDedicatedTranscribeModel = false, includeLanguageHint = false, includeVadTuning = false))
+            } else {
+                add(DirectLiveProfile(primaryModel, isDedicatedTranscribeModel = false, includeLanguageHint = false, includeVadTuning = true))
+                add(DirectLiveProfile(primaryModel, isDedicatedTranscribeModel = false, includeLanguageHint = false, includeVadTuning = false))
+                add(DirectLiveProfile(PRIMARY_TRANSCRIBE_LIVE_MODEL, isDedicatedTranscribeModel = true, includeLanguageHint = false, includeVadTuning = false))
             }
-            activeDirectProfileIndex = 0
-            activeDirectApiKey = directKey
-            activeFallbackSystemPrompt = fallbackSystemPrompt
-            activeDirectListener = listener
-            openDirectWebSocketAttempt()
-        } else {
-            isDirectWsMode = false
-            connectFirebaseLiveSession(
-                scope = scope,
-                fallbackSystemPrompt = fallbackSystemPrompt,
-                listener = listener
-            )
         }
+        activeDirectProfileIndex = 0
+        activeDirectApiKey = directKey
+        activeDirectListener = listener
+        openDirectWebSocketAttempt()
+        return true
     }
 
     fun sendPcm16kChunk(pcmBytes: ByteArray) {
         if (isClosed || pcmBytes.isEmpty()) return
 
-        if (isDirectWsMode) {
-            val socket = synchronized(bufferLock) {
-                if (!isReady) {
-                    enqueuePendingPcmLocked(pcmBytes)
-                    null
-                } else {
-                    activeSocket
-                }
+        val socket = synchronized(bufferLock) {
+            if (!isReady) {
+                enqueuePendingPcmLocked(pcmBytes)
+                null
+            } else {
+                activeSocket
             }
-            if (socket != null) {
-                sendDirectAudioFrame(socket, pcmBytes)
-            }
-        } else {
-            val queue = synchronized(bufferLock) {
-                if (!isReady) {
-                    enqueuePendingPcmLocked(pcmBytes)
-                    null
-                } else {
-                    firebaseAudioQueue
-                }
-            }
-            queue?.trySend(pcmBytes)
+        }
+        if (socket != null) {
+            sendDirectAudioFrame(socket, pcmBytes)
         }
     }
 
@@ -191,18 +152,11 @@ class GeminiLiveStreamEngine(
     suspend fun finishAndAwaitTrailingTranscript(maxWaitMs: Long = 2_400L) {
         if (isClosed) return
 
-        if (isDirectWsMode) {
-            if (isReady) {
-                val endPayload = JSONObject()
-                    .put("realtimeInput", JSONObject().put("audioStreamEnd", true))
-                    .toString()
-                activeSocket?.send(endPayload)
-            }
-        } else {
-            // Send a short 350ms silence tail so Gemini Live's server VAD flushes final syllables.
-            val silenceTail = ByteArray(16_000 * 2 * 350 / 1000)
-            firebaseAudioQueue?.trySend(silenceTail)
-            firebaseAudioQueue?.close()
+        if (isReady) {
+            val endPayload = JSONObject()
+                .put("realtimeInput", JSONObject().put("audioStreamEnd", true))
+                .toString()
+            activeSocket?.send(endPayload)
         }
 
         val startedWait = System.currentTimeMillis()
@@ -240,181 +194,7 @@ class GeminiLiveStreamEngine(
         } finally {
             activeSocket = null
         }
-
-        firebaseAudioQueue?.close()
-        firebaseAudioQueue = null
-        firebaseSendJob?.cancel()
-        firebaseSendJob = null
-        firebaseReceiveJob?.cancel()
-        firebaseReceiveJob = null
-        firebaseConnectJob?.cancel()
-        firebaseConnectJob = null
-
-        val sessionToClose = activeFirebaseSession
-        activeFirebaseSession = null
-        if (sessionToClose != null) {
-            CoroutineScope(Dispatchers.IO).launch {
-                runCatching { sessionToClose.close() }
-            }
-        }
     }
-
-    // --- Path A: Built-in Firebase AI Logic Live API ---
-
-    private fun connectFirebaseLiveSession(
-        scope: CoroutineScope,
-        fallbackSystemPrompt: String,
-        listener: GeminiLiveTranscriptListener
-    ) {
-        firebaseConnectJob = scope.launch(Dispatchers.IO) {
-            try {
-                // Attempt 1: Dedicated Gemini 3.5 Transcribe Live model (`ResponseModality.TEXT`)
-                var connectedModel = PRIMARY_TRANSCRIBE_LIVE_MODEL
-                var isDedicatedTranscribe = true
-                var session: LiveSession? = tryConnectFirebaseLiveModel(
-                    modelName = PRIMARY_TRANSCRIBE_LIVE_MODEL,
-                    modality = ResponseModality.TEXT,
-                    systemPrompt = null
-                )
-
-                // Attempt 2: Fallback to Gemini 3.1 Flash Live (`ResponseModality.AUDIO` + inputAudioTranscription)
-                if (session == null && !isClosed) {
-                    Log.w(TAG, "Firebase Live ($PRIMARY_TRANSCRIBE_LIVE_MODEL) unavailable; falling back to $FALLBACK_LIVE_MODEL")
-                    connectedModel = FALLBACK_LIVE_MODEL
-                    isDedicatedTranscribe = false
-                    session = tryConnectFirebaseLiveModel(
-                        modelName = FALLBACK_LIVE_MODEL,
-                        modality = ResponseModality.AUDIO,
-                        systemPrompt = fallbackSystemPrompt
-                    )
-                }
-
-                if (session == null) {
-                    throw IllegalStateException("Unable to connect to Gemini Live ($PRIMARY_TRANSCRIBE_LIVE_MODEL).")
-                }
-
-                if (isClosed) {
-                    runCatching { session.close() }
-                    return@launch
-                }
-
-                activeFirebaseSession = session
-                val queue = Channel<ByteArray>(capacity = Channel.UNLIMITED)
-                firebaseAudioQueue = queue
-
-                val buffered = drainPendingPcm()
-                isReady = true
-                listener.onSessionReady(modelName = connectedModel, isDirectKey = false)
-
-                firebaseSendJob = scope.launch(Dispatchers.IO) {
-                    try {
-                        for (chunk in buffered) {
-                            if (isClosed) break
-                            session.sendAudioRealtime(InlineData(chunk, "audio/pcm;rate=16000"))
-                        }
-                        for (chunk in queue) {
-                            if (isClosed) break
-                            session.sendAudioRealtime(InlineData(chunk, "audio/pcm;rate=16000"))
-                        }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        if (!isClosed) {
-                            Log.e(TAG, "Firebase Live sendAudioRealtime failed", e)
-                        }
-                    }
-                }
-
-                firebaseReceiveJob = scope.launch(Dispatchers.IO) {
-                    try {
-                        session.receive().collect { message ->
-                            if (isClosed) return@collect
-                            if (message is LiveServerContent) {
-                                val inputTx = message.inputTranscription?.text.orEmpty()
-                                val textParts = message.content?.parts
-                                    ?.filterIsInstance<TextPart>()
-                                    ?.joinToString("") { it.text }
-                                    .orEmpty()
-                                val turnDone = message.turnComplete || message.generationComplete
-
-                                if (isDedicatedTranscribe) {
-                                    // Dedicated `gemini-3.5-transcribe-live` emits recognized speech via
-                                    // `inputTranscription` and/or `content.parts` (TEXT modality).
-                                    val recognized = inputTx.ifEmpty { textParts }
-                                    if (recognized.isNotEmpty()) {
-                                        lastTranscriptReceivedAtMs = System.currentTimeMillis()
-                                        if (inputTx.isNotEmpty()) {
-                                            listener.onFinalTranscript(inputTx)
-                                        } else {
-                                            listener.onDeltaTranscript(textParts, turnDone)
-                                        }
-                                    } else if (turnDone) {
-                                        listener.onDeltaTranscript("", isTurnFinished = true)
-                                    }
-                                } else {
-                                    if (inputTx.isNotEmpty() || turnDone) {
-                                        if (inputTx.isNotEmpty()) {
-                                            lastTranscriptReceivedAtMs = System.currentTimeMillis()
-                                        }
-                                        listener.onDeltaTranscript(inputTx, isTurnFinished = turnDone)
-                                    }
-                                }
-                            }
-                        }
-                        if (!isClosed) {
-                            listener.onClosed()
-                        }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        if (!isClosed) {
-                            Log.e(TAG, "Firebase Live receive loop failed", e)
-                            listener.onError(e.localizedMessage ?: "Gemini Live stream error")
-                        }
-                    }
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                if (!isClosed) {
-                    Log.e(TAG, "Firebase Live connection failed", e)
-                    listener.onError(e.localizedMessage ?: "Unable to connect to Gemini Live")
-                }
-            }
-        }
-    }
-
-    private suspend fun tryConnectFirebaseLiveModel(
-        modelName: String,
-        modality: ResponseModality,
-        systemPrompt: String?
-    ): LiveSession? {
-        return try {
-            val liveModel = Firebase.ai.liveModel(
-                modelName = modelName,
-                generationConfig = liveGenerationConfig {
-                    responseModality = modality
-                    inputAudioTranscription = AudioTranscriptionConfig()
-                },
-                systemInstruction = systemPrompt?.let { content { text(it) } }
-            )
-            withTimeoutOrNull(10_000L) {
-                liveModel.connect()
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w(TAG, "Firebase liveModel($modelName) connect attempt failed: ${e.localizedMessage}")
-            // Re-throw App Check 403 immediately so caller surfaces the actionable Keys hint
-            val msg = e.localizedMessage.orEmpty()
-            if (msg.contains("App Check", ignoreCase = true) || msg.contains("403")) {
-                throw e
-            }
-            null
-        }
-    }
-
-    // --- Path B: Direct Personal Gemini API Key BidiGenerateContent WebSocket ---
 
     private fun openDirectWebSocketAttempt() {
         if (isClosed) return
@@ -437,7 +217,7 @@ class GeminiLiveStreamEngine(
                     val setupPayload = buildDirectSetupPayload(profile, activeFallbackSystemPrompt)
                     Log.d(
                         TAG,
-                        "Direct Gemini Live WS opened; sending setup for ${profile.modelName} (langHint=${profile.includeLanguageHint})"
+                        "Direct Gemini Live WS opened; sending setup for ${profile.modelName} (langHint=${profile.includeLanguageHint}, vad=${profile.includeVadTuning})"
                     )
                     webSocket.send(setupPayload)
                 }
@@ -512,7 +292,6 @@ class GeminiLiveStreamEngine(
         val setupObj = JSONObject().put("model", fullModel)
 
         if (profile.isDedicatedTranscribeModel) {
-            // `gemini-3.5-transcribe-live` requires TEXT response modality and inputAudioTranscription
             setupObj.put(
                 "generationConfig",
                 JSONObject().put("responseModalities", JSONArray().put("TEXT"))
@@ -523,7 +302,6 @@ class GeminiLiveStreamEngine(
             }
             setupObj.put("inputAudioTranscription", txConfig)
         } else {
-            // Conversational fallback model (`gemini-3.1-flash-live-preview`)
             setupObj.put(
                 "generationConfig",
                 JSONObject().put("responseModalities", JSONArray().put("AUDIO"))
@@ -533,6 +311,19 @@ class GeminiLiveStreamEngine(
                 JSONObject().put("parts", JSONArray().put(JSONObject().put("text", fallbackSystemPrompt)))
             )
             setupObj.put("inputAudioTranscription", JSONObject())
+        }
+
+        if (profile.includeVadTuning) {
+            val vadObj = JSONObject()
+                .put("disabled", false)
+                .put("startOfSpeechSensitivity", "START_SENSITIVITY_HIGH")
+                .put("endOfSpeechSensitivity", "END_SENSITIVITY_HIGH")
+                .put("prefixPaddingMs", 200)
+                .put("silenceDurationMs", 500)
+            setupObj.put(
+                "realtimeInputConfig",
+                JSONObject().put("automaticActivityDetection", vadObj)
+            )
         }
 
         return JSONObject().put("setup", setupObj).toString()
@@ -585,13 +376,19 @@ class GeminiLiveStreamEngine(
 
             val serverContent = root.optJSONObject("serverContent") ?: return
 
-            // 1. Interim partial transcript (`gemini-3.5-transcribe-live` live streaming hypothesis)
+            // 1. Interim partial transcript
             val interimTx = serverContent.optJSONObject("interimInputTranscription")
                 ?.optString("text")
                 .orEmpty()
             if (interimTx.isNotEmpty()) {
-                lastTranscriptReceivedAtMs = System.currentTimeMillis()
-                listener.onInterimTranscript(interimTx)
+                val cleanedInterim = TranscriptSanitizer.sanitizeSegment(
+                    rawText = interimTx,
+                    customGlossary = activeCustomGlossary
+                )
+                if (cleanedInterim.isNotEmpty()) {
+                    lastTranscriptReceivedAtMs = System.currentTimeMillis()
+                    listener.onInterimTranscript(cleanedInterim)
+                }
             }
 
             // 2. Finalized inputTranscription
@@ -602,17 +399,22 @@ class GeminiLiveStreamEngine(
                 serverContent.optBoolean("generationComplete", false)
 
             if (inputTxText.isNotEmpty()) {
-                lastTranscriptReceivedAtMs = System.currentTimeMillis()
-                if (profile.isDedicatedTranscribeModel) {
-                    // `gemini-3.5-transcribe-live` emits finalized phrase segments in `inputTranscription`
-                    listener.onFinalTranscript(inputTxText)
-                } else {
-                    listener.onDeltaTranscript(inputTxText, isTurnFinished = txFinished || turnComplete)
+                val cleanedInput = TranscriptSanitizer.sanitizeSegment(
+                    rawText = inputTxText,
+                    customGlossary = activeCustomGlossary
+                )
+                if (cleanedInput.isNotEmpty()) {
+                    lastTranscriptReceivedAtMs = System.currentTimeMillis()
+                    if (profile.isDedicatedTranscribeModel) {
+                        listener.onFinalTranscript(cleanedInput)
+                    } else {
+                        listener.onDeltaTranscript(cleanedInput, isTurnFinished = txFinished || turnComplete)
+                    }
                 }
                 return
             }
 
-            // 3. Dedicated TEXT modality `modelTurn.parts[].text` (if emitted by transcribe-live)
+            // 3. Dedicated TEXT modality `modelTurn.parts[].text`
             if (profile.isDedicatedTranscribeModel) {
                 val modelTurn = serverContent.optJSONObject("modelTurn")
                 val parts = modelTurn?.optJSONArray("parts")
@@ -622,7 +424,10 @@ class GeminiLiveStreamEngine(
                         val text = parts.optJSONObject(i)?.optString("text").orEmpty()
                         if (text.isNotEmpty()) sb.append(text)
                     }
-                    val modelText = sb.toString()
+                    val modelText = TranscriptSanitizer.sanitizeSegment(
+                        rawText = sb.toString(),
+                        customGlossary = activeCustomGlossary
+                    )
                     if (modelText.isNotEmpty()) {
                         lastTranscriptReceivedAtMs = System.currentTimeMillis()
                         listener.onDeltaTranscript(modelText, isTurnFinished = turnComplete)
@@ -665,7 +470,10 @@ class GeminiLiveStreamEngine(
 
     private fun resolvePrimaryLiveModel(customModel: String?): String {
         val clean = customModel?.trim().orEmpty()
-        return if (clean.contains("live", ignoreCase = true) || clean.contains("transcribe", ignoreCase = true)) {
+        return if (clean.contains("live", ignoreCase = true) ||
+            clean.contains("transcribe", ignoreCase = true) ||
+            clean.contains("native-audio", ignoreCase = true)
+        ) {
             clean
         } else {
             PRIMARY_TRANSCRIBE_LIVE_MODEL
@@ -674,7 +482,7 @@ class GeminiLiveStreamEngine(
 
     private fun buildFallbackLiveSystemInstruction(format: CantoneseFormat, customGlossary: String): String {
         val glossaryPart = if (customGlossary.isNotBlank()) {
-            " Prioritize these Hong Kong names/terms: $customGlossary."
+            " Bias recognition for these Hong Kong names/terms only if spoken: $customGlossary."
         } else {
             ""
         }
@@ -684,6 +492,6 @@ class GeminiLiveStreamEngine(
             "verbatim Hong Kong colloquial Cantonese (廣東話口語, Traditional Chinese)"
         }
         return "You are a silent Hong Kong Cantonese live dictation listener for $style.$glossaryPart " +
-            "Do not speak long replies; stay silent or acknowledge minimally so input transcription stays clean."
+            "Stay completely silent and do not generate conversational replies."
     }
 }

@@ -192,7 +192,7 @@ fun SettingsScreen(
                     }
 
                     Text(
-                        text = "Optional. Leave blank to use built-in Firebase AI Logic, or add your Google AI Studio key to run standalone exported APKs directly without Firebase App Check.",
+                        text = "Required for Gemini engines (Direct REST, Live WebSocket, Written Chinese conversion & Deep Review). Paste your Google AI Studio API key to call generativelanguage.googleapis.com directly — no Firebase used.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -206,32 +206,6 @@ fun SettingsScreen(
                             },
                             clearTag = "clear_gemini_key_button"
                         )
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "Use Personal Key (Bypass App Check)",
-                                    style = MaterialTheme.typography.labelLarge
-                                )
-                                Text(
-                                    text = "Routes audio & live streaming directly to Gemini API",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Switch(
-                                checked = apiKeyStatus.usePersonalGeminiKey,
-                                onCheckedChange = { checked ->
-                                    haptics.toggle(checked)
-                                    onToggleUsePersonalGemini(checked)
-                                },
-                                modifier = Modifier.testTag("toggle_personal_gemini_switch")
-                            )
-                        }
                     }
 
                     OutlinedTextField(
@@ -325,7 +299,7 @@ fun SettingsScreen(
                                         .weight(1f)
                                         .testTag("custom_gemini_model_input"),
                                     singleLine = true,
-                                    placeholder = { Text("Default (gemini-3.8-flash)") },
+                                    placeholder = { Text("Default (gemini-2.5-flash)") },
                                     shape = RoundedCornerShape(12.dp)
                                 )
                                 OutlinedButton(
@@ -475,7 +449,7 @@ fun SettingsScreen(
                 }
             }
 
-            // 3. Standalone APK & App Check Note
+            // 3. Direct API Dictation Enhancements Note
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(20.dp),
@@ -495,11 +469,11 @@ fun SettingsScreen(
                     )
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(
-                            text = "Exported ZIP / Sideloaded APK Note",
+                            text = "Direct Provider API Mode",
                             style = MaterialTheme.typography.titleSmall
                         )
                         Text(
-                            text = "Locally built debug APKs don't receive AI Studio's App Check debug token, causing \"Firebase App Check token is invalid\". Saving your personal Gemini API key above switches immediately to direct Gemini API calls.",
+                            text = "All Gemini and OpenAI transcription calls connect directly to Google AI Studio and OpenAI using your saved keys, with near-field noise reduction, deterministic temperature = 0 decoding, and prompt-leakage protection.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

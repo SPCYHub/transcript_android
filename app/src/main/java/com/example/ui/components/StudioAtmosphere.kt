@@ -259,7 +259,9 @@ fun EngineSelectorPillBar(
                 val indicatorColor: Color? = when (mode) {
                     RoutingMode.GEMINI_ONLY -> if (apiKeyStatus.isUsingDirectGemini) {
                         MaterialTheme.colorScheme.primary
-                    } else null
+                    } else {
+                        MaterialTheme.colorScheme.tertiary
+                    }
                     RoutingMode.OPENAI_ONLY -> if (apiKeyStatus.isOpenAiConfigured) {
                         MaterialTheme.colorScheme.primary
                     } else {

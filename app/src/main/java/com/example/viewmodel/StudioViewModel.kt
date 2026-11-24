@@ -166,9 +166,9 @@ class StudioViewModel(
         keyStore.saveGeminiApiKey(cleaned)
         _geminiKeyTest.value = KeyTestResult.Idle
         _snackbarMessage.value = if (cleaned.isNotEmpty()) {
-            "Personal Gemini key saved (encrypted on device)"
+            "Gemini API key saved (encrypted on device)"
         } else {
-            "Personal Gemini key cleared — using Firebase AI Logic"
+            "Gemini API key cleared"
         }
     }
 
@@ -179,12 +179,7 @@ class StudioViewModel(
     }
 
     fun setUsePersonalGeminiKey(enabled: Boolean) {
-        keyStore.setUsePersonalGeminiKey(enabled)
-        _snackbarMessage.value = if (enabled) {
-            "Routing Gemini via personal API key"
-        } else {
-            "Routing Gemini via built-in Firebase AI Logic"
-        }
+        keyStore.setUsePersonalGeminiKey(true)
     }
 
     fun saveCustomGeminiModel(modelName: String) {

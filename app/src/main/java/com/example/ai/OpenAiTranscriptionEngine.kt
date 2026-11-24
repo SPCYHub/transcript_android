@@ -37,7 +37,6 @@ private data class OpenAiModelCandidate(
 )
 
 private val OPENAI_REST_MODEL_CHAIN = listOf(
-    OpenAiModelCandidate("gpt-transcribe", TranscriptionEngineId.OPENAI_GPT_TRANSCRIBE),
     OpenAiModelCandidate("gpt-4o-transcribe", TranscriptionEngineId.OPENAI_GPT_TRANSCRIBE),
     OpenAiModelCandidate("gpt-4o-mini-transcribe", TranscriptionEngineId.OPENAI_MINI_FALLBACK)
 )
@@ -55,6 +54,7 @@ interface OpenAiAudioApi {
         @Part file: MultipartBody.Part,
         @Part("model") model: RequestBody,
         @Part("response_format") responseFormat: RequestBody,
+        @Part("temperature") temperature: RequestBody,
         @Part("prompt") prompt: RequestBody?
     ): Response<OpenAiTranscriptionResponse>
 }
@@ -66,9 +66,12 @@ data class OpenAiAudioOutput(
 )
 
 /**
- * OpenAI Speech-to-Text engine targeting `/v1/audio/transcriptions` with automatic
- * model fallback (`gpt-transcribe` -> `gpt-4o-transcribe` -> `gpt-4o-mini-transcribe`).
- * Resolves the user's personal key from [SecureKeyStore] first, falling back to BuildConfig.
+ * OpenAI Speech-to-Text engine targeting `/v1/audio/transcriptions` with:
+ * - Deterministic `temperature = 0` per OpenAI prompting guide to eliminate repetition loops.
+ * - Strictly non-instructional `prompt` (only user glossary or prior context tail; never AI
+ *   command sentences that get echoed during pauses).
+ * - Post-transcription `TranscriptSanitizer` filtering.
+ * - Automatic model fallback (`gpt-4o-transcribe` -> `gpt-4o-mini-transcribe`).
  */
 class OpenAiTranscriptionEngine(
     private val keyStore: SecureKeyStore
@@ -103,7 +106,6 @@ class OpenAiTranscriptionEngine(
     suspend fun transcribe(
         audio: PreparedAudio,
         customGlossary: String,
-        preferWritten: Boolean = false,
         promptOverride: String? = null
     ): Result<OpenAiAudioOutput> {
         val effectiveKey = keyStore.resolveEffectiveOpenAiKey()
@@ -117,8 +119,7 @@ class OpenAiTranscriptionEngine(
 
         val startedAt = System.currentTimeMillis()
         val prompt = promptOverride ?: CantonesePrompts.buildOpenAiPrompt(
-            customGlossary = customGlossary,
-            preferWritten = preferWritten
+            customGlossary = customGlossary
         )
 
         return try {
@@ -134,6 +135,7 @@ class OpenAiTranscriptionEngine(
                         engineId = candidate.engineId,
                         audio = audio,
                         prompt = prompt,
+                        customGlossary = customGlossary,
                         startedAt = startedAt
                     )
                     if (attempt.isSuccess) {
@@ -177,18 +179,12 @@ class OpenAiTranscriptionEngine(
     suspend fun transcribeWavChunk(
         wavBytes: ByteArray,
         customGlossary: String,
-        preferWritten: Boolean,
         contextTail: String = ""
     ): Result<OpenAiAudioOutput> {
-        val basePrompt = CantonesePrompts.buildOpenAiPrompt(
+        val prompt = CantonesePrompts.buildOpenAiPrompt(
             customGlossary = customGlossary,
-            preferWritten = preferWritten
+            contextTail = contextTail
         )
-        val prompt = if (contextTail.isNotBlank()) {
-            "$basePrompt 上文：$contextTail"
-        } else {
-            basePrompt
-        }
         val audio = PreparedAudio(
             bytes = wavBytes,
             fileName = "live_chunk.wav",
@@ -205,7 +201,6 @@ class OpenAiTranscriptionEngine(
         return transcribe(
             audio = audio,
             customGlossary = customGlossary,
-            preferWritten = preferWritten,
             promptOverride = prompt
         )
     }
@@ -216,6 +211,7 @@ class OpenAiTranscriptionEngine(
         engineId: TranscriptionEngineId,
         audio: PreparedAudio,
         prompt: String,
+        customGlossary: String,
         startedAt: Long
     ): Result<OpenAiAudioOutput> {
         val textPlain = "text/plain".toMediaType()
@@ -228,17 +224,23 @@ class OpenAiTranscriptionEngine(
             file = filePart,
             model = modelId.toRequestBody(textPlain),
             responseFormat = "json".toRequestBody(textPlain),
+            temperature = "0".toRequestBody(textPlain),
             prompt = prompt.takeIf { it.isNotBlank() }?.toRequestBody(textPlain)
         )
 
         if (response.isSuccessful) {
-            val transcriptText = response.body()?.text?.trim().orEmpty()
-            if (transcriptText.isEmpty()) {
-                return Result.failure(IllegalStateException("OpenAI returned an empty transcript."))
+            val rawText = response.body()?.text?.trim().orEmpty()
+            val cleaned = TranscriptSanitizer.sanitizeSegment(
+                rawText = rawText,
+                activePrompt = prompt,
+                customGlossary = customGlossary
+            )
+            if (cleaned.isEmpty()) {
+                return Result.failure(IllegalStateException("OpenAI returned no clear speech."))
             }
             return Result.success(
                 OpenAiAudioOutput(
-                    text = transcriptText,
+                    text = cleaned,
                     engineId = engineId,
                     latencyMillis = System.currentTimeMillis() - startedAt
                 )

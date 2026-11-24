@@ -217,9 +217,7 @@ fun LiveStreamingCanvasCard(
                             color = MaterialTheme.colorScheme.onErrorContainer,
                             modifier = Modifier.weight(1f)
                         )
-                        if (state.warningMessage.contains("Key", ignoreCase = true) ||
-                            state.warningMessage.contains("App Check", ignoreCase = true)
-                        ) {
+                        if (state.warningMessage.contains("Key", ignoreCase = true)) {
                             Spacer(modifier = Modifier.width(8.dp))
                             OutlinedButton(
                                 onClick = {
@@ -330,7 +328,7 @@ fun ErrorRecoveryCard(
                     tint = MaterialTheme.colorScheme.error
                 )
                 Text(
-                    text = if (state.isAppCheckOrKeyError) "API Key or App Check Needed" else "Transcription Issue",
+                    text = if (state.isAppCheckOrKeyError) "API Key Required" else "Transcription Issue",
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.onErrorContainer,
                     fontWeight = FontWeight.Bold
@@ -345,7 +343,7 @@ fun ErrorRecoveryCard(
 
             if (state.isAppCheckOrKeyError) {
                 Text(
-                    text = "Tip: If you built this APK locally from a ZIP export, add your own Gemini or OpenAI API key in Keys to run directly without Firebase App Check.",
+                    text = "Tip: Add and save your personal Gemini or OpenAI API key in the Keys tab to connect directly.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.85f)
                 )

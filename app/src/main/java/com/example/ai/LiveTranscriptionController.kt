@@ -12,10 +12,6 @@ import com.example.model.RoutingMode
 import com.example.model.TranscriptRecord
 import com.example.model.TranscriptionEngineId
 import com.example.model.UserPreferences
-import com.google.firebase.Firebase
-import com.google.firebase.ai.ai
-import com.google.firebase.ai.type.content
-import com.google.firebase.ai.type.generationConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -36,8 +32,12 @@ import java.nio.ByteOrder
 import java.security.MessageDigest
 
 private const val TAG = "LiveTranscriptionCtrl"
-private const val DEFAULT_LIVE_GEMINI_MODEL = "gemini-3.5-flash-lite"
-private const val FALLBACK_LIVE_GEMINI_MODEL = "gemini-3.8-flash"
+private val LIVE_GEMINI_STREAM_MODELS = listOf(
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.8-flash"
+)
 
 private enum class LivePipelineMode {
     OPENAI_REALTIME,
@@ -59,7 +59,7 @@ data class LiveStreamState(
     val confirmedText: String = "",
     val partialText: String = "",
     val engineLabel: String = "Gemini Live Stream",
-    val engineId: TranscriptionEngineId = TranscriptionEngineId.GEMINI_FLASH_LITE,
+    val engineId: TranscriptionEngineId = TranscriptionEngineId.GEMINI_DIRECT_LITE,
     val metrics: AudioCaptureMetrics = AudioCaptureMetrics(),
     val lastChunkLatencyMs: Long = 0L,
     val totalAudioBytes: Long = 0L,
@@ -82,16 +82,16 @@ private fun needsSpaceBetween(prev: Char, next: Char): Boolean {
 }
 
 /**
- * Real-time streaming transcription controller supporting:
- * 1. OpenAI Realtime WebSocket (`gpt-4o-transcribe` / `gpt-live-transcribe` / `gpt-4o-mini-transcribe`)
- *    with automatic client commit cadence for continuous speech and awaited finalization.
- * 2. OpenAI Chunked Live REST fallback (`/v1/audio/transcriptions`) if Realtime WebSocket is
- *    unavailable in `OPENAI_ONLY` mode so OpenAI still streams phrase-by-phrase.
- * 3. Gemini Live Transcribe API (`gemini-3.5-transcribe-live`, fallback `gemini-3.1-flash-live-preview`)
- *    true full-duplex streaming over Firebase AI Logic (`Firebase.ai.liveModel`) or Personal Key
- *    (`BidiGenerateContent` WebSocket).
- * 4. Gemini VAD Chunked Streaming fallback (`gemini-3.5-flash-lite` / `gemini-3.8-flash`) with
- *    16kHz PCM16 + 300ms pre-roll + fast 1.25s rolling slices if Live API is unavailable.
+ * Real-time streaming transcription controller powered exclusively by the user's saved API keys
+ * (Direct Gemini API + OpenAI Realtime / REST — zero Firebase dependencies):
+ *
+ * 1. OpenAI Realtime WebSocket (`gpt-4o-transcribe` / `gpt-4o-mini-transcribe` / `gpt-live-transcribe`)
+ *    with `near_field` noise reduction, clean server VAD (no colliding client commits!), and
+ *    post-transcription sanitization + boundary deduplication.
+ * 2. OpenAI Chunked Live REST fallback (`/v1/audio/transcriptions`) with `temperature = 0`.
+ * 3. Gemini Direct Live API (`BidiGenerateContent` WebSocket) with VAD sensitivity tuning.
+ * 4. Gemini Direct VAD Chunked SSE Streaming (`streamGenerateContent`) with top-level
+ *    `systemInstruction`, `temperature = 0`, and `thinkingBudget = 0`.
  */
 class LiveTranscriptionController(
     private val keyStore: SecureKeyStore,
@@ -103,17 +103,15 @@ class LiveTranscriptionController(
 ) {
 
     companion object {
-        // Fast live cadence so words appear while talking (~1.25s rolling slices or 360ms micro-pause)
-        private const val CHUNK_VAD_PAUSE_MS = 360L
-        private const val CHUNK_MAX_WINDOW_MS = 1_250L
+        private const val CHUNK_VAD_PAUSE_MS = 380L
+        private const val CHUNK_MAX_WINDOW_MS = 1_450L
         private const val CHUNK_MIN_SEGMENT_BYTES = 16_000 * 2 * 250 / 1000 // 250ms at 16kHz PCM16
         private const val PRE_ROLL_MAX_FRAMES = 3 // ~300ms pre-roll so opening syllables aren't clipped
         private const val STREAM_CHUNK_TIMEOUT_MS = 30_000L
 
-        // OpenAI Realtime continuous-speech commit cadence so long monologues stream without waiting for silence
-        private const val REALTIME_MANUAL_PAUSE_MS = 380L
-        private const val REALTIME_MANUAL_WINDOW_MS = 1_350L
-        private const val REALTIME_SERVER_VAD_MAX_CONTINUOUS_MS = 2_100L
+        // Used ONLY when turn_detection == null (e.g. gpt-live-transcribe); never collides with server_vad
+        private const val REALTIME_MANUAL_PAUSE_MS = 450L
+        private const val REALTIME_MANUAL_WINDOW_MS = 2_200L
 
         // Capped fallback audio buffer (up to ~16s) so short/quiet utterances can still be finalized on stop
         private const val MAX_FALLBACK_PCM_BYTES = 24_000 * 2 * 16
@@ -121,24 +119,6 @@ class LiveTranscriptionController(
     }
 
     private val pcmRecorder = LivePcmStreamRecorder()
-
-    private val geminiLiveModel by lazy {
-        Firebase.ai.generativeModel(
-            modelName = DEFAULT_LIVE_GEMINI_MODEL,
-            generationConfig = generationConfig {
-                temperature = 0.1f
-            }
-        )
-    }
-
-    private val geminiLiveFallbackModel by lazy {
-        Firebase.ai.generativeModel(
-            modelName = FALLBACK_LIVE_GEMINI_MODEL,
-            generationConfig = generationConfig {
-                temperature = 0.1f
-            }
-        )
-    }
 
     private val _state = MutableStateFlow(LiveStreamState())
     val state: StateFlow<LiveStreamState> = _state.asStateFlow()
@@ -162,6 +142,8 @@ class LiveTranscriptionController(
     private var realtimeLastSpeechMs = 0L
     @Volatile
     private var realtimeHasPendingSpeech = false
+    @Volatile
+    private var preferredStreamGeminiModel: String? = null
 
     private var activePrefs = UserPreferences()
     private var activeSourceType = AudioSourceType.STUDIO_RECORD
@@ -194,19 +176,40 @@ class LiveTranscriptionController(
         onLiveSegmentCommit = onCommitSegment
         sessionStartedAtMs = System.currentTimeMillis()
 
-        val wantOpenAiRealtime = when (preferences.routingMode) {
-            RoutingMode.OPENAI_ONLY -> true
-            RoutingMode.GEMINI_ONLY -> false
-            RoutingMode.AUTO -> openAiRealtime.isConfigured
+        val hasOpenAi = openAiRealtime.isConfigured
+        val hasGemini = keyStore.hasDirectGeminiKey()
+
+        val useOpenAi = when (preferences.routingMode) {
+            RoutingMode.OPENAI_ONLY -> {
+                if (!hasOpenAi) {
+                    val msg = "OpenAI API key is not configured. Add your OpenAI key in the Keys tab, or switch to Auto / Gemini."
+                    _state.value = LiveStreamState(errorMessage = msg)
+                    return Result.failure(IllegalStateException(msg))
+                }
+                true
+            }
+            RoutingMode.GEMINI_ONLY -> {
+                if (!hasGemini) {
+                    val msg = "Gemini API key is not configured. Add and save your Gemini API key in the Keys tab."
+                    _state.value = LiveStreamState(errorMessage = msg)
+                    return Result.failure(IllegalStateException(msg))
+                }
+                false
+            }
+            RoutingMode.AUTO -> {
+                when {
+                    hasOpenAi -> true
+                    hasGemini -> false
+                    else -> {
+                        val msg = "No API key configured. Add your Gemini or OpenAI API key in the Keys tab to start live dictation."
+                        _state.value = LiveStreamState(errorMessage = msg)
+                        return Result.failure(IllegalStateException(msg))
+                    }
+                }
+            }
         }
 
-        if (wantOpenAiRealtime && !openAiRealtime.isConfigured) {
-            val msg = "OpenAI API key is not configured. Add your key in the Keys tab, or switch to Auto / Gemini."
-            _state.value = LiveStreamState(errorMessage = msg)
-            return Result.failure(IllegalStateException(msg))
-        }
-
-        return if (wantOpenAiRealtime) {
+        return if (useOpenAi) {
             startOpenAiRealtimeSession(scope, preferences)
         } else {
             startGeminiLiveApiSession(scope, preferences)
@@ -241,18 +244,19 @@ class LiveTranscriptionController(
                         val wavBytes = wrapPcm16AsWav(fallbackBytes, sampleRateAtStop)
                         val restRes = openAiRest.transcribeWavChunk(
                             wavBytes = wavBytes,
-                            customGlossary = activePrefs.customGlossary,
-                            preferWritten = activePrefs.defaultFormat == CantoneseFormat.WRITTEN_CHINESE
+                            customGlossary = activePrefs.customGlossary
                         )
                         restRes.onSuccess { out ->
-                            _state.update { cur ->
-                                cur.copy(
-                                    confirmedText = appendTranscriptSegment(cur.confirmedText, out.text),
-                                    partialText = "",
-                                    engineId = out.engineId,
-                                    lastChunkLatencyMs = out.latencyMillis,
-                                    errorMessage = null
-                                )
+                            val deduped = commitSanitizedSegment(
+                                rawSegment = out.text,
+                                activePrompt = "",
+                                engineIdOverride = out.engineId,
+                                latencyOverride = out.latencyMillis
+                            )
+                            if (deduped.isNotEmpty()) {
+                                withContext(Dispatchers.Main.immediate) {
+                                    onLiveSegmentCommit?.invoke(deduped)
+                                }
                             }
                         }.onFailure { err ->
                             fallbackError = err.message ?: currentErr
@@ -264,12 +268,9 @@ class LiveTranscriptionController(
             LivePipelineMode.GEMINI_LIVE_API -> {
                 geminiLive.finishAndAwaitTrailingTranscript(maxWaitMs = 2_400L)
 
-                // Safety net: if Gemini Live produced zero text (e.g., very short press-release
-                // before handshake completed) and we captured audio without auth/App Check errors,
-                // transcribe the buffered PCM once via Gemini Flash-Lite / Flash.
                 val currentText = _state.value.combinedText.trim()
                 val currentErr = _state.value.errorMessage
-                if (currentText.isEmpty() && !isAuthError(currentErr) && !isAppCheckError(currentErr)) {
+                if (currentText.isEmpty() && !isAuthError(currentErr) && keyStore.hasDirectGeminiKey()) {
                     val fallbackBytes = drainFallbackPcm()
                     if (fallbackBytes.size >= MIN_FALLBACK_PCM_BYTES) {
                         streamGeminiSegment(fallbackBytes, activePrefs)
@@ -312,8 +313,8 @@ class LiveTranscriptionController(
         val codecLabel = when (modeAtStop) {
             LivePipelineMode.OPENAI_REALTIME -> "Live PCM16 24kHz WS"
             LivePipelineMode.OPENAI_CHUNKED_REST -> "OpenAI Live PCM16 16kHz"
-            LivePipelineMode.GEMINI_LIVE_API -> "Gemini 3.5 Transcribe Live 16kHz WS"
-            LivePipelineMode.GEMINI_VAD_STREAM -> "Gemini Live PCM16 16kHz"
+            LivePipelineMode.GEMINI_LIVE_API -> "Gemini Direct Live 16kHz WS"
+            LivePipelineMode.GEMINI_VAD_STREAM -> "Gemini Direct PCM16 16kHz"
         }
 
         val record = TranscriptRecord(
@@ -328,7 +329,11 @@ class LiveTranscriptionController(
             audioSizeBytes = finalState.totalAudioBytes,
             audioSha256 = sha256,
             spokenCantonese = fullText,
-            writtenChinese = if (isWritten) fullText else null,
+            writtenChinese = if (isWritten && modeAtStop != LivePipelineMode.OPENAI_REALTIME && modeAtStop != LivePipelineMode.OPENAI_CHUNKED_REST) {
+                fullText
+            } else {
+                null
+            },
             detectedLanguageMix = "Cantonese (Live)",
             engineUsed = finalState.engineId,
             latencyMillis = finalState.lastChunkLatencyMs
@@ -378,10 +383,8 @@ class LiveTranscriptionController(
             engineId = TranscriptionEngineId.OPENAI_GPT_TRANSCRIBE
         )
 
-        val preferWritten = preferences.defaultFormat == CantoneseFormat.WRITTEN_CHINESE
         openAiRealtime.connect(
             customGlossary = preferences.customGlossary,
-            preferWritten = preferWritten,
             listener = object : RealtimeTranscriptListener {
                 override fun onSessionReady(modelName: String, usesServerVad: Boolean) {
                     realtimeUsesServerVad = usesServerVad
@@ -395,31 +398,42 @@ class LiveTranscriptionController(
                 }
 
                 override fun onPartialDelta(delta: String) {
+                    var sanitizedPartial: String? = null
                     _state.update { cur ->
-                        val nextPartial = cur.partialText + delta
-                        scope.launch(Dispatchers.Main.immediate) {
-                            onLivePartialUpdate?.invoke(nextPartial)
-                        }
+                        val rawPartial = cur.partialText + delta
+                        val cleaned = TranscriptSanitizer.sanitizeSegment(
+                            rawText = rawPartial,
+                            activePrompt = openAiRealtime.currentPromptUsed,
+                            customGlossary = activePrefs.customGlossary
+                        )
+                        sanitizedPartial = cleaned
                         cur.copy(
-                            partialText = nextPartial,
-                            isTranscribingChunk = true,
+                            partialText = cleaned,
+                            isTranscribingChunk = cleaned.isNotEmpty(),
                             errorMessage = null
                         )
+                    }
+                    sanitizedPartial?.takeIf { it.isNotEmpty() }?.let { partial ->
+                        scope.launch(Dispatchers.Main.immediate) {
+                            onLivePartialUpdate?.invoke(partial)
+                        }
                     }
                 }
 
                 override fun onSegmentCompleted(transcript: String) {
-                    _state.update { cur ->
-                        val nextConfirmed = appendTranscriptSegment(cur.confirmedText, transcript)
-                        cur.copy(
-                            confirmedText = nextConfirmed,
-                            partialText = "",
-                            isTranscribingChunk = false,
-                            errorMessage = null
-                        )
-                    }
-                    scope.launch(Dispatchers.Main.immediate) {
-                        onLiveSegmentCommit?.invoke(transcript)
+                    val netNew = commitSanitizedSegment(
+                        rawSegment = transcript,
+                        activePrompt = openAiRealtime.currentPromptUsed
+                    )
+                    if (netNew.isNotEmpty()) {
+                        scope.launch(Dispatchers.Main.immediate) {
+                            onLiveSegmentCommit?.invoke(netNew)
+                        }
+                    } else {
+                        // Clear any composing partial if the completed segment turned out to be empty/duplicate
+                        scope.launch(Dispatchers.Main.immediate) {
+                            onLivePartialUpdate?.invoke("")
+                        }
                     }
                 }
 
@@ -427,14 +441,12 @@ class LiveTranscriptionController(
                     if (!_state.value.isActive || isFinalizing) return
                     val existingConfirmed = _state.value.combinedText
 
-                    if (preferences.routingMode == RoutingMode.AUTO) {
-                        Log.w(TAG, "OpenAI Realtime error ($message); failing over live to Gemini Live API")
+                    if (preferences.routingMode == RoutingMode.AUTO && keyStore.hasDirectGeminiKey()) {
+                        Log.w(TAG, "OpenAI Realtime error ($message); failing over live to Gemini Direct Live")
                         openAiRealtime.disconnect()
                         pcmRecorder.stop()
                         startGeminiLiveApiSession(scope, preferences, carryOverText = existingConfirmed)
                     } else if (!isAuthError(message)) {
-                        // In OPENAI_ONLY mode, fail over from Realtime WebSocket to OpenAI Chunked REST
-                        // streaming so OpenAI STILL transcribes live phrase-by-phrase!
                         Log.w(TAG, "OpenAI Realtime unavailable ($message); switching live to OpenAI Chunked REST")
                         openAiRealtime.disconnect()
                         pcmRecorder.stop()
@@ -481,17 +493,13 @@ class LiveTranscriptionController(
             realtimeLastSpeechMs = chunk.timestampMs
         }
 
-        if (realtimeHasPendingSpeech && openAiRealtime.hasUncommittedAudio()) {
+        // Only manually commit buffers when server_vad is DISABLED (e.g. gpt-live-transcribe).
+        // When server_vad is active, let OpenAI's server VAD cleanly commit utterances at natural
+        // pauses so we never slice mid-word or trigger double-commits / prompt hallucinations!
+        if (!realtimeUsesServerVad && realtimeHasPendingSpeech && openAiRealtime.hasUncommittedAudio()) {
             val silenceMs = chunk.timestampMs - realtimeLastSpeechMs
             val continuousMs = chunk.timestampMs - realtimeSpeechStartedMs
-
-            val shouldCommit = if (!realtimeUsesServerVad) {
-                // Dedicated gpt-live-transcribe (turn_detection = null) relies on client commits
-                silenceMs >= REALTIME_MANUAL_PAUSE_MS || continuousMs >= REALTIME_MANUAL_WINDOW_MS
-            } else {
-                // Even with server_vad, commit periodically during non-stop speech so text streams live
-                continuousMs >= REALTIME_SERVER_VAD_MAX_CONTINUOUS_MS
-            }
+            val shouldCommit = silenceMs >= REALTIME_MANUAL_PAUSE_MS || continuousMs >= REALTIME_MANUAL_WINDOW_MS
 
             if (shouldCommit) {
                 if (openAiRealtime.commitBuffer()) {
@@ -555,27 +563,19 @@ class LiveTranscriptionController(
         val res = openAiRest.transcribeWavChunk(
             wavBytes = wavBytes,
             customGlossary = preferences.customGlossary,
-            preferWritten = preferences.defaultFormat == CantoneseFormat.WRITTEN_CHINESE,
             contextTail = contextTail
         )
         res.onSuccess { out ->
-            val cleaned = out.text.trim()
-            if (cleaned.isNotEmpty()) {
-                _state.update { cur ->
-                    cur.copy(
-                        confirmedText = appendTranscriptSegment(cur.confirmedText, cleaned),
-                        partialText = "",
-                        isTranscribingChunk = false,
-                        engineId = out.engineId,
-                        lastChunkLatencyMs = out.latencyMillis,
-                        errorMessage = null
-                    )
-                }
+            val netNew = commitSanitizedSegment(
+                rawSegment = out.text,
+                activePrompt = contextTail,
+                engineIdOverride = out.engineId,
+                latencyOverride = out.latencyMillis
+            )
+            if (netNew.isNotEmpty()) {
                 withContext(Dispatchers.Main.immediate) {
-                    onLiveSegmentCommit?.invoke(cleaned)
+                    onLiveSegmentCommit?.invoke(netNew)
                 }
-            } else {
-                _state.update { it.copy(isTranscribingChunk = false) }
             }
         }.onFailure { err ->
             Log.e(TAG, "OpenAI live REST chunk failed", err)
@@ -588,7 +588,7 @@ class LiveTranscriptionController(
         }
     }
 
-    // --- Pipeline 3: Gemini 3.5 Transcribe Live API (True Full-Duplex Bidirectional Streaming) ---
+    // --- Pipeline 3: Gemini Direct Live API (User API Key WebSocket) ---
 
     private fun startGeminiLiveApiSession(
         scope: CoroutineScope,
@@ -599,19 +599,17 @@ class LiveTranscriptionController(
         activeSampleRateHz = LivePcmStreamRecorder.SAMPLE_RATE_GEMINI_HZ
         clearBuffers()
 
-        val usingDirectKey = keyStore.resolveDirectGeminiKey() != null
         _state.value = LiveStreamState(
             isActive = true,
             isConnecting = true,
             confirmedText = carryOverText,
             partialText = "",
-            engineLabel = if (usingDirectKey) "Gemini Direct Live · Connecting…" else "Gemini 3.5 Transcribe Live · Connecting…",
-            engineId = if (usingDirectKey) TranscriptionEngineId.GEMINI_DIRECT_LIVE else TranscriptionEngineId.GEMINI_LIVE
+            engineLabel = "Gemini Direct Live · Connecting…",
+            engineId = TranscriptionEngineId.GEMINI_DIRECT_LIVE
         )
 
         var lastChunkTs = System.currentTimeMillis()
-        geminiLive.connect(
-            scope = scope,
+        val connected = geminiLive.connect(
             format = preferences.defaultFormat,
             customGlossary = preferences.customGlossary,
             listener = object : GeminiLiveTranscriptListener {
@@ -621,8 +619,8 @@ class LiveTranscriptionController(
                     _state.update {
                         it.copy(
                             isConnecting = false,
-                            engineLabel = if (isDirectKey) "Gemini Direct Live · $modelName" else "Gemini Live · $modelName",
-                            engineId = if (isDirectKey) TranscriptionEngineId.GEMINI_DIRECT_LIVE else TranscriptionEngineId.GEMINI_LIVE,
+                            engineLabel = "Gemini Direct Live · $modelName",
+                            engineId = TranscriptionEngineId.GEMINI_DIRECT_LIVE,
                             errorMessage = null
                         )
                     }
@@ -630,7 +628,10 @@ class LiveTranscriptionController(
 
                 override fun onInterimTranscript(text: String) {
                     if (!_state.value.isActive || pipelineMode != LivePipelineMode.GEMINI_LIVE_API) return
-                    val clean = text.trim()
+                    val clean = TranscriptSanitizer.sanitizeSegment(
+                        rawText = text,
+                        customGlossary = activePrefs.customGlossary
+                    )
                     if (clean.isEmpty()) return
                     val now = System.currentTimeMillis()
                     val latency = (now - lastChunkTs).coerceIn(0L, 10_000L)
@@ -651,23 +652,23 @@ class LiveTranscriptionController(
 
                 override fun onFinalTranscript(text: String) {
                     if (!_state.value.isActive || pipelineMode != LivePipelineMode.GEMINI_LIVE_API) return
-                    val committed = text.trim()
-                    if (committed.isEmpty()) return
                     val now = System.currentTimeMillis()
                     val latency = (now - lastChunkTs).coerceIn(0L, 10_000L)
                     lastChunkTs = now
 
-                    _state.update { cur ->
-                        cur.copy(
-                            confirmedText = appendTranscriptSegment(cur.confirmedText, committed),
-                            partialText = "",
-                            isTranscribingChunk = false,
-                            lastChunkLatencyMs = latency,
-                            errorMessage = null
-                        )
-                    }
-                    scope.launch(Dispatchers.Main.immediate) {
-                        onLiveSegmentCommit?.invoke(committed)
+                    val netNew = commitSanitizedSegment(
+                        rawSegment = text,
+                        activePrompt = "",
+                        latencyOverride = latency
+                    )
+                    if (netNew.isNotEmpty()) {
+                        scope.launch(Dispatchers.Main.immediate) {
+                            onLiveSegmentCommit?.invoke(netNew)
+                        }
+                    } else {
+                        scope.launch(Dispatchers.Main.immediate) {
+                            onLivePartialUpdate?.invoke("")
+                        }
                     }
                 }
 
@@ -685,11 +686,15 @@ class LiveTranscriptionController(
                     _state.update { cur ->
                         val nextPartial = cur.partialText + delta
                         if (isTurnFinished) {
-                            val committed = nextPartial.trim()
-                            if (committed.isNotEmpty()) {
-                                committedToNotify = committed
+                            val sanitized = TranscriptSanitizer.sanitizeSegment(
+                                rawText = nextPartial,
+                                customGlossary = activePrefs.customGlossary
+                            )
+                            val netNew = TranscriptSanitizer.deduplicateAgainstExisting(cur.confirmedText, sanitized)
+                            if (netNew.isNotEmpty()) {
+                                committedToNotify = netNew
                                 cur.copy(
-                                    confirmedText = appendTranscriptSegment(cur.confirmedText, committed),
+                                    confirmedText = appendTranscriptSegment(cur.confirmedText, netNew),
                                     partialText = "",
                                     isTranscribingChunk = false,
                                     lastChunkLatencyMs = latency,
@@ -728,12 +733,6 @@ class LiveTranscriptionController(
                 override fun onError(message: String) {
                     if (!_state.value.isActive || isFinalizing || pipelineMode != LivePipelineMode.GEMINI_LIVE_API) return
 
-                    if (isAppCheckError(message)) {
-                        val friendly = "Firebase App Check rejected this build. Add your personal Gemini API key in the Keys tab."
-                        _state.update { it.copy(isConnecting = false, isTranscribingChunk = false, errorMessage = friendly) }
-                        return
-                    }
-
                     if (isAuthError(message)) {
                         _state.update { it.copy(isConnecting = false, isTranscribingChunk = false, errorMessage = message) }
                         return
@@ -759,6 +758,12 @@ class LiveTranscriptionController(
             }
         )
 
+        if (!connected) {
+            val msg = "Gemini API key is not configured. Add and save your Gemini API key in the Keys tab."
+            _state.value = LiveStreamState(errorMessage = msg)
+            return Result.failure(IllegalStateException(msg))
+        }
+
         startMetricsRelay(scope)
 
         return pcmRecorder.start(
@@ -775,7 +780,7 @@ class LiveTranscriptionController(
         )
     }
 
-    // --- Pipeline 4: Gemini Live VAD Streaming Fallback ---
+    // --- Pipeline 4: Gemini Direct VAD Chunked SSE Streaming Fallback ---
 
     private fun startGeminiVadChunkSession(
         scope: CoroutineScope,
@@ -787,14 +792,13 @@ class LiveTranscriptionController(
         activeSampleRateHz = LivePcmStreamRecorder.SAMPLE_RATE_GEMINI_HZ
         clearBuffers()
 
-        val usingDirectKey = keyStore.resolveDirectGeminiKey() != null
         _state.value = LiveStreamState(
             isActive = true,
             isConnecting = false,
             confirmedText = carryOverText,
             partialText = "",
-            engineLabel = if (usingDirectKey) "Gemini Direct · VAD Stream" else "Gemini Flash-Lite · VAD Stream",
-            engineId = if (usingDirectKey) TranscriptionEngineId.GEMINI_DIRECT_LITE else TranscriptionEngineId.GEMINI_FLASH_LITE
+            engineLabel = "Gemini Direct · VAD Stream",
+            engineId = TranscriptionEngineId.GEMINI_DIRECT_LITE
         )
 
         val queue = Channel<ByteArray>(capacity = Channel.UNLIMITED)
@@ -834,7 +838,6 @@ class LiveTranscriptionController(
                 if (!segmentHasSpeech) {
                     segmentHasSpeech = true
                     segmentStartedAtMs = chunk.timestampMs
-                    // Prepend pre-roll frames so the beginning of the first syllable is preserved.
                     while (preRollFrames.isNotEmpty()) {
                         segmentPcmBuffer.write(preRollFrames.removeFirst())
                     }
@@ -844,7 +847,6 @@ class LiveTranscriptionController(
             } else if (segmentHasSpeech) {
                 segmentPcmBuffer.write(chunk.pcmBytes)
             } else {
-                // Keep a rolling 300ms pre-roll buffer during silence.
                 if (preRollFrames.size >= PRE_ROLL_MAX_FRAMES) {
                     preRollFrames.removeFirst()
                 }
@@ -898,39 +900,58 @@ class LiveTranscriptionController(
     }
 
     private suspend fun streamGeminiSegment(pcmBytes: ByteArray, preferences: UserPreferences) {
+        val directKey = keyStore.resolveDirectGeminiKey()
+        if (directKey.isNullOrBlank()) {
+            _state.update {
+                it.copy(
+                    isTranscribingChunk = false,
+                    errorMessage = "Gemini API key is not configured. Add it in the Keys tab."
+                )
+            }
+            return
+        }
+
         val startedAt = System.currentTimeMillis()
         val wavBytes = wrapPcm16AsWav(pcmBytes, LivePcmStreamRecorder.SAMPLE_RATE_GEMINI_HZ)
         val contextTail = _state.value.confirmedText.takeLast(48)
 
-        val prompt = buildString {
-            append(CantonesePrompts.buildFastKeyboardPrompt(preferences.defaultFormat, preferences.customGlossary))
-            if (contextTail.isNotBlank()) {
-                append("\nContinue seamlessly after the previous words (do NOT repeat them): \"")
-                append(contextTail)
-                append("\"")
-            }
-            append("\nIf this slice contains only background noise or silence, output an empty string.")
-        }
+        val systemInstruction = CantonesePrompts.buildFastKeyboardSystemInstruction(
+            format = preferences.defaultFormat,
+            customGlossary = preferences.customGlossary
+        )
+        val userPrompt = CantonesePrompts.buildFastKeyboardUserPrompt(contextTail = contextTail)
+        val candidates = buildList {
+            keyStore.resolveCustomGeminiModel()?.let { add(it) }
+            preferredStreamGeminiModel?.let { add(it) }
+            addAll(LIVE_GEMINI_STREAM_MODELS)
+        }.distinct()
 
         val segmentBuilder = StringBuilder()
-        val directKey = keyStore.resolveDirectGeminiKey()
         _state.update { it.copy(isTranscribingChunk = true) }
 
         try {
             withTimeout(STREAM_CHUNK_TIMEOUT_MS) {
-                if (directKey != null) {
-                    val primaryModel = keyStore.resolveCustomGeminiModel() ?: DEFAULT_LIVE_GEMINI_MODEL
+                var lastErr: Exception? = null
+                var succeeded = false
+
+                for (modelName in candidates) {
+                    segmentBuilder.clear()
                     try {
                         directGeminiRest.streamAudioSegment(
                             apiKey = directKey,
-                            modelName = primaryModel,
-                            promptText = prompt,
+                            modelName = modelName,
+                            promptText = userPrompt,
+                            systemInstruction = systemInstruction,
                             audioBytes = wavBytes,
-                            audioMimeType = "audio/wav"
+                            audioMimeType = "audio/wav",
+                            disableThinking = true
                         ).collect { piece ->
                             if (piece.isNotEmpty()) {
                                 segmentBuilder.append(piece)
-                                val cleanPartial = segmentBuilder.toString().trim()
+                                val cleanPartial = TranscriptSanitizer.sanitizeSegment(
+                                    rawText = segmentBuilder.toString(),
+                                    customGlossary = preferences.customGlossary
+                                )
                                 if (cleanPartial.isNotEmpty()) {
                                     _state.update { it.copy(partialText = cleanPartial, errorMessage = null) }
                                     withContext(Dispatchers.Main.immediate) {
@@ -939,125 +960,94 @@ class LiveTranscriptionController(
                                 }
                             }
                         }
-                    } catch (primaryErr: Exception) {
-                        if (primaryErr is CancellationException) throw primaryErr
-                        val fallbackModel = if (primaryModel == DEFAULT_LIVE_GEMINI_MODEL) {
-                            FALLBACK_LIVE_GEMINI_MODEL
-                        } else {
-                            DEFAULT_LIVE_GEMINI_MODEL
-                        }
-                        Log.w(TAG, "Direct Gemini live stream ($primaryModel) failed; retrying with $fallbackModel", primaryErr)
-                        segmentBuilder.clear()
-                        directGeminiRest.streamAudioSegment(
-                            apiKey = directKey,
-                            modelName = fallbackModel,
-                            promptText = prompt,
-                            audioBytes = wavBytes,
-                            audioMimeType = "audio/wav"
-                        ).collect { piece ->
-                            if (piece.isNotEmpty()) {
-                                segmentBuilder.append(piece)
-                                val cleanPartial = segmentBuilder.toString().trim()
-                                if (cleanPartial.isNotEmpty()) {
-                                    _state.update { it.copy(partialText = cleanPartial, errorMessage = null) }
-                                    withContext(Dispatchers.Main.immediate) {
-                                        onLivePartialUpdate?.invoke(cleanPartial)
-                                    }
-                                }
-                            }
-                        }
+                        preferredStreamGeminiModel = modelName
+                        succeeded = true
+                        break
+                    } catch (err: Exception) {
+                        if (err is CancellationException) throw err
+                        lastErr = err
+                        val msg = err.message.orEmpty()
+                        val isModelErr = msg.contains("(404)") || msg.contains("not found", ignoreCase = true)
+                        if (!isModelErr) throw err
+                        Log.w(TAG, "Direct Gemini stream ($modelName) unavailable ($msg); trying next model")
                     }
-                } else {
-                    try {
-                        geminiLiveModel.generateContentStream(
-                            content("user") {
-                                inlineData(wavBytes, "audio/wav")
-                                text(prompt)
-                            }
-                        ).collect { chunk ->
-                            val piece = chunk.text.orEmpty()
-                            if (piece.isNotEmpty()) {
-                                segmentBuilder.append(piece)
-                                val cleanPartial = segmentBuilder.toString().trim()
-                                if (cleanPartial.isNotEmpty()) {
-                                    _state.update { it.copy(partialText = cleanPartial, errorMessage = null) }
-                                    withContext(Dispatchers.Main.immediate) {
-                                        onLivePartialUpdate?.invoke(cleanPartial)
-                                    }
-                                }
-                            }
-                        }
-                    } catch (primaryErr: Exception) {
-                        if (primaryErr is CancellationException) throw primaryErr
-                        Log.w(TAG, "Firebase AI live stream ($DEFAULT_LIVE_GEMINI_MODEL) failed; retrying with $FALLBACK_LIVE_GEMINI_MODEL", primaryErr)
-                        segmentBuilder.clear()
-                        geminiLiveFallbackModel.generateContentStream(
-                            content("user") {
-                                inlineData(wavBytes, "audio/wav")
-                                text(prompt)
-                            }
-                        ).collect { chunk ->
-                            val piece = chunk.text.orEmpty()
-                            if (piece.isNotEmpty()) {
-                                segmentBuilder.append(piece)
-                                val cleanPartial = segmentBuilder.toString().trim()
-                                if (cleanPartial.isNotEmpty()) {
-                                    _state.update { it.copy(partialText = cleanPartial, errorMessage = null) }
-                                    withContext(Dispatchers.Main.immediate) {
-                                        onLivePartialUpdate?.invoke(cleanPartial)
-                                    }
-                                }
-                            }
-                        }
-                    }
+                }
+
+                if (!succeeded && lastErr != null) {
+                    throw lastErr
                 }
             }
 
-            val finalized = segmentBuilder.toString().trim()
             val latency = System.currentTimeMillis() - startedAt
-            if (finalized.isNotEmpty()) {
-                _state.update { cur ->
-                    cur.copy(
-                        confirmedText = appendTranscriptSegment(cur.confirmedText, finalized),
-                        partialText = "",
-                        isTranscribingChunk = false,
-                        lastChunkLatencyMs = latency,
-                        errorMessage = null
-                    )
-                }
+            val netNew = commitSanitizedSegment(
+                rawSegment = segmentBuilder.toString(),
+                activePrompt = contextTail,
+                latencyOverride = latency
+            )
+            if (netNew.isNotEmpty()) {
                 withContext(Dispatchers.Main.immediate) {
-                    onLiveSegmentCommit?.invoke(finalized)
+                    onLiveSegmentCommit?.invoke(netNew)
                 }
             } else {
-                _state.update { it.copy(partialText = "", isTranscribingChunk = false) }
+                withContext(Dispatchers.Main.immediate) {
+                    onLivePartialUpdate?.invoke("")
+                }
             }
         } catch (e: TimeoutCancellationException) {
             Log.e(TAG, "Gemini live chunk timed out", e)
-            _state.update {
-                it.copy(
-                    partialText = "",
-                    isTranscribingChunk = false,
-                    errorMessage = "Live chunk timed out; still listening…"
-                )
-            }
+            _state.update { it.copy(isTranscribingChunk = false, partialText = "", errorMessage = "Live chunk timed out") }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Gemini live chunk failed", e)
-            val errMsg = e.localizedMessage ?: "Live stream chunk error"
-            val friendly = if (errMsg.contains("App Check", ignoreCase = true) || errMsg.contains("403")) {
-                "Firebase App Check rejected this build. Add your personal Gemini API key in the Keys tab."
-            } else {
-                errMsg
-            }
             _state.update {
                 it.copy(
-                    partialText = "",
                     isTranscribingChunk = false,
-                    errorMessage = friendly
+                    partialText = "",
+                    errorMessage = e.localizedMessage ?: "Gemini live chunk error"
                 )
             }
         }
+    }
+
+    /**
+     * Sanitizes, deduplicates against confirmed text, updates [_state], and returns ONLY the
+     * net-new text that should be committed into a host IME / sandbox editor.
+     */
+    private fun commitSanitizedSegment(
+        rawSegment: String,
+        activePrompt: String,
+        engineIdOverride: TranscriptionEngineId? = null,
+        latencyOverride: Long? = null
+    ): String {
+        val sanitized = TranscriptSanitizer.sanitizeSegment(
+            rawText = rawSegment,
+            activePrompt = activePrompt,
+            customGlossary = activePrefs.customGlossary
+        )
+        var netNewToCommit = ""
+        _state.update { cur ->
+            val netNew = TranscriptSanitizer.deduplicateAgainstExisting(cur.confirmedText, sanitized)
+            netNewToCommit = netNew
+            if (netNew.isNotEmpty()) {
+                cur.copy(
+                    confirmedText = appendTranscriptSegment(cur.confirmedText, netNew),
+                    partialText = "",
+                    isTranscribingChunk = false,
+                    engineId = engineIdOverride ?: cur.engineId,
+                    lastChunkLatencyMs = latencyOverride ?: cur.lastChunkLatencyMs,
+                    errorMessage = null
+                )
+            } else {
+                cur.copy(
+                    partialText = "",
+                    isTranscribingChunk = false,
+                    engineId = engineIdOverride ?: cur.engineId,
+                    lastChunkLatencyMs = latencyOverride ?: cur.lastChunkLatencyMs
+                )
+            }
+        }
+        return netNewToCommit
     }
 
     private fun appendFallbackPcm(pcmBytes: ByteArray) {
@@ -1088,15 +1078,11 @@ class LiveTranscriptionController(
     private fun isAuthError(message: String?): Boolean {
         if (message.isNullOrBlank()) return false
         return message.contains("401") ||
+            message.contains("403") ||
             message.contains("invalid_api_key", ignoreCase = true) ||
             message.contains("Incorrect API key", ignoreCase = true) ||
             message.contains("API key not valid", ignoreCase = true) ||
             message.contains("authentication", ignoreCase = true)
-    }
-
-    private fun isAppCheckError(message: String?): Boolean {
-        if (message.isNullOrBlank()) return false
-        return message.contains("App Check", ignoreCase = true) || message.contains("403")
     }
 
     private fun startMetricsRelay(scope: CoroutineScope) {

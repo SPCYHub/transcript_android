@@ -64,6 +64,7 @@ class CantoVoiceImeService : InputMethodService() {
     private var themePreference = ThemePreference.SYSTEM
     private var showQuickPhrases = false
     private var lastCommittedLength = 0
+    private var activeComposingText = ""
     private var currentActionLabel = "Send ↵"
 
     private var palette: ImePalette = ImePalette.Dark
@@ -649,13 +650,20 @@ class CantoVoiceImeService : InputMethodService() {
                 preferences = prefs,
                 sourceType = AudioSourceType.KEYBOARD_LIVE,
                 onPartial = { partial ->
-                    currentInputConnection?.setComposingText(partial, 1)
-                    if (partial.isNotBlank()) {
+                    if (partial.isBlank()) {
+                        if (activeComposingText.isNotEmpty()) {
+                            currentInputConnection?.setComposingText("", 1)
+                            activeComposingText = ""
+                        }
+                    } else {
+                        activeComposingText = partial
+                        currentInputConnection?.setComposingText(partial, 1)
                         previewBanner?.text = "Streaming: $partial ▍"
                         previewBanner?.setTextColor(palette.jadeAccent)
                     }
                 },
                 onCommitSegment = { segment ->
+                    activeComposingText = ""
                     commitToHost(segment, trackAsDictation = true)
                     AppContainer.studioHaptics.phraseCommit()
                     previewBanner?.text = "Committed: $segment"
@@ -713,9 +721,17 @@ class CantoVoiceImeService : InputMethodService() {
         updateVoicePadUi()
 
         imeScope.launch {
-            currentInputConnection?.finishComposingText()
+            // Do NOT call finishComposingText() before stopAndFinalize() — doing so bakes the live
+            // partial hypothesis into the host field, and then the incoming `.completed` event commits
+            // the same phrase a second time. Leaving the composing span active allows `commitText`
+            // inside `onCommitSegment` to replace it cleanly with zero duplication.
             statusTextView?.text = "FINALIZING…"
             val result = AppContainer.liveTranscriptionController.stopAndFinalize(saveToSession = true)
+            if (activeComposingText.isNotEmpty()) {
+                // Only finalize composing text if no final `.completed` segment replaced it.
+                currentInputConnection?.finishComposingText()
+                activeComposingText = ""
+            }
             liveObserverJob?.cancel()
             liveObserverJob = null
             waveformView?.updateWaveform(emptyList(), live = false)
@@ -746,6 +762,10 @@ class CantoVoiceImeService : InputMethodService() {
         isHoldGestureLocked = false
         liveObserverJob?.cancel()
         liveObserverJob = null
+        if (activeComposingText.isNotEmpty()) {
+            currentInputConnection?.setComposingText("", 1)
+            activeComposingText = ""
+        }
         currentInputConnection?.finishComposingText()
         AppContainer.liveTranscriptionController.stopAndDiscard()
         waveformView?.updateWaveform(emptyList(), live = false)
