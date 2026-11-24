@@ -18,7 +18,7 @@ import org.robolectric.annotation.Config
  * Uses obviously fake keys only. Does not call live provider endpoints.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [34])
 class SecureKeyStoreApiKeyTest {
 
     private fun store(): SecureKeyStore {
