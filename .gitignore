@@ -16,3 +16,10 @@
 local.properties
 .env
 debug.keystore
+
+# Build output
+/app/build
+/app/release
+
+# Local tooling (building/build-sync scripts; keep out of the repo)
+/.scripts
