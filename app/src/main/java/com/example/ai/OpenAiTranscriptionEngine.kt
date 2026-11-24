@@ -220,7 +220,7 @@ class OpenAiTranscriptionEngine(
         val filePart = MultipartBody.Part.createFormData("file", audio.openAiFileName, fileBody)
 
         val response = api.createTranscription(
-            authorization = "Bearer $apiKey",
+            authorization = ProviderRequestAuth.openAiAuthorization(apiKey),
             file = filePart,
             model = modelId.toRequestBody(textPlain),
             responseFormat = "json".toRequestBody(textPlain),

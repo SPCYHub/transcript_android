@@ -29,7 +29,7 @@ Package: `com.aistudio.cantoscribe.kxtrvp` · Namespace: `com.example` · Min SD
 app/src/main/java/com/example/
 ├── MainActivity.kt          # Compose shell, nav rail (Studio / Keyboard / Session / Keys),
 │                            # WhatsApp/SAF share intent intake, Quick Tile intent
-├── core/                    # AppContainer (manual DI), AppCheckInit, QuickTileService, StudioHaptics
+├── core/                    # AppContainer (manual DI), QuickTileService, StudioHaptics
 ├── ai/                      # TranscriptionRouter (auto-routing + fallback),
 │                            # GeminiTranscriptionEngine, OpenAiTranscriptionEngine,
 │                            # GeminiLiveStreamEngine, OpenAiRealtimeStreamEngine,
@@ -47,30 +47,30 @@ app/src/main/java/com/example/
 
 ## Build
 
-```bash
-# .env — copy and fill in your OpenAI key (optional; user can also add keys in-app)
-cp .env.example .env
+Copy `.env.example` to `.env` if you want a local secrets file, but leave the OpenAI
+placeholder unchanged for published debug APKs. Prefer adding keys in the app
+(Settings → Keys).
 
-./gradlew assembleDebug        # debug APK (signed with debug.keystore, auto-generated)
-./gradlew testDebugUnitTest    # Robolectric + JUnit unit tests
-./gradlew assembleRelease      # release APK (needs KEYSTORE_PATH/STORE_PASSWORD/KEY_PASSWORD env)
-```
+Debug package: `gradlew assembleDebug` (signed with `debug.keystore`, auto-generated).
+Unit tests: `gradlew testDebugUnitTest` (Robolectric + JUnit).
+Release package: `gradlew assembleRelease` (needs KEYSTORE_PATH/STORE_PASSWORD/KEY_PASSWORD env).
 
 Release signing expects `KEYSTORE_PATH` (default `<repo>/my-upload-key.jks`),
 `STORE_PASSWORD`, and `KEY_PASSWORD` environment variables — see `app/build.gradle.kts`.
+
+No App Check debug token and no `adb` registration are required. Sideload the debug APK,
+open Settings → Keys, and paste a Gemini and/or OpenAI API key.
 
 ## Configuration
 
 | Variable | Where | Purpose |
 |---|---|---|
-| `OPENAI_API_KEY` | `.env` (Secrets Gradle Plugin) | Build-time OpenAI fallback key; user keys take priority |
-| `FIREBASE_APPCHECK_DEBUG_TOKEN` | `.env` (ignored by Secrets plugin) | Debug App Check token for local Firebase AI Logic testing |
-| `google-services.json` | `app/` (gitignored, optional) | Firebase project config; absent = Firebase AI Logic unavailable, direct Gemini/OpenAI still work |
+| In-app Gemini / OpenAI keys | Settings → Keys (`SecureKeyStore`) | Required for transcription; stored in the hardware-backed Android Keystore |
+| `OPENAI_API_KEY` | `.env` (Secrets Gradle Plugin) | Optional build-time OpenAI fallback only; keep the placeholder in published APKs. User keys take priority |
 
-Gemini transcription uses Firebase AI Logic via App Check (reCAPTCHA site key in
-`res/values/firebase_applet_config.xml`). Direct Gemini REST (`DirectGeminiRestClient`) and
-OpenAI are used when the user supplies their own keys in-app (Settings → Keys), so exported /
-sideloaded APKs work without Firebase.
+Firebase AI Logic and App Check are not used at runtime. Direct Gemini REST
+(`DirectGeminiRestClient`), Gemini Live WebSocket, and OpenAI are called with the
+user-supplied keys, so exported / sideloaded APKs work without Firebase or a debug token.
 
 ## Testing
 

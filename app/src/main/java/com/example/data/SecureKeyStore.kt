@@ -6,6 +6,7 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.util.Log
 import com.example.BuildConfig
+import com.example.ai.ProviderRequestAuth
 import com.example.model.ApiKeyStatus
 import com.example.model.KeyTestResult
 import kotlinx.coroutines.Dispatchers
@@ -149,7 +150,7 @@ class SecureKeyStore(appContext: Context) {
         try {
             val request = Request.Builder()
                 .url("https://generativelanguage.googleapis.com/v1beta/models?pageSize=5")
-                .header("x-goog-api-key", keyToTest)
+                .header(ProviderRequestAuth.GEMINI_API_KEY_HEADER, keyToTest)
                 .get()
                 .build()
 
@@ -186,7 +187,7 @@ class SecureKeyStore(appContext: Context) {
         try {
             val request = Request.Builder()
                 .url("https://api.openai.com/v1/models")
-                .header("Authorization", "Bearer $keyToTest")
+                .header("Authorization", ProviderRequestAuth.openAiAuthorization(keyToTest))
                 .get()
                 .build()
 

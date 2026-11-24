@@ -17,7 +17,6 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 private const val TAG = "DirectGeminiRest"
-private const val GEMINI_REST_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 /**
  * Direct Google Gemini REST API client (`generativelanguage.googleapis.com`) using the
@@ -121,10 +120,10 @@ class DirectGeminiRestClient {
                 mediaResolution = mediaResolution
             )
 
-            val url = "$GEMINI_REST_BASE/$modelName:generateContent"
+            val url = ProviderRequestAuth.geminiGenerateContentUrl(modelName)
             val request = Request.Builder()
                 .url(url)
-                .header("x-goog-api-key", apiKey)
+                .header(ProviderRequestAuth.GEMINI_API_KEY_HEADER, apiKey)
                 .header("Content-Type", "application/json")
                 .post(payload.toString().toRequestBody(jsonMediaType))
                 .build()
@@ -171,10 +170,10 @@ class DirectGeminiRestClient {
             mediaResolution = null
         )
 
-        val url = "$GEMINI_REST_BASE/$modelName:streamGenerateContent?alt=sse"
+        val url = ProviderRequestAuth.geminiStreamGenerateContentUrl(modelName)
         val request = Request.Builder()
             .url(url)
-            .header("x-goog-api-key", apiKey)
+            .header(ProviderRequestAuth.GEMINI_API_KEY_HEADER, apiKey)
             .header("Accept", "text/event-stream")
             .post(payload.toString().toRequestBody(jsonMediaType))
             .build()
@@ -197,7 +196,7 @@ class DirectGeminiRestClient {
                     )
                     val retryReq = Request.Builder()
                         .url(url)
-                        .header("x-goog-api-key", apiKey)
+                        .header(ProviderRequestAuth.GEMINI_API_KEY_HEADER, apiKey)
                         .header("Accept", "text/event-stream")
                         .post(fallbackPayload.toString().toRequestBody(jsonMediaType))
                         .build()

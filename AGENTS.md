@@ -7,8 +7,9 @@ Read `README.md` for the feature map and architecture before editing.
 
 ## Repo layout
 
-- `app/build.gradle.kts` — module build: Compose, Firebase AI Logic + App Check, Retrofit/OkHttp/Moshi,
+- `app/build.gradle.kts` — module build: Compose, Retrofit/OkHttp/Moshi,
   Secrets Gradle Plugin (`.env` / `.env.example`), KSP (Moshi codegen).
+  Firebase AI Logic and App Check libraries are not used; users supply API keys in-app.
 - `gradle/libs.versions.toml` — version catalog; keep new dependencies here.
 - `app/src/main/java/com/example/` — all app code (`ai/`, `audio/`, `core/`, `data/`, `ime/`,
   `model/`, `ui/`, `viewmodel/`).
@@ -21,8 +22,10 @@ Read `README.md` for the feature map and architecture before editing.
 - New user-facing strings go in `app/src/main/res/values/strings.xml` (Cantonese/HK flavor:
   spoken Cantonese, not Mandarin).
 - API keys never in source: user keys live in `data/SecureKeyStore` (Android Keystore
-  AES-256-GCM); build-time keys come from `.env` via the Secrets plugin into `BuildConfig`.
-  `.env`, `local.properties`, `debug.keystore`, and `my-upload-key.jks` are gitignored.
+  AES-256-GCM) and are entered in Settings → Keys. Optional build-time OpenAI fallback
+  comes from `.env` via the Secrets plugin into `BuildConfig` and must stay a placeholder
+  in published debug APKs. `.env`, `local.properties`, `debug.keystore`, `google-services.json`,
+  and `my-upload-key.jks` are gitignored. No App Check debug token is required or embedded.
 - Model IDs and routing live in `ai/TranscriptionRouter` and `model/TranscriptModels.kt`.
 
 ## Heavy compute (grokvm dev box)

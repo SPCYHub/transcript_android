@@ -19,8 +19,6 @@ private const val TAG = "GeminiLiveStreamEngine"
 private const val PRIMARY_TRANSCRIBE_LIVE_MODEL = "gemini-3.5-transcribe-live"
 private const val FALLBACK_LIVE_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 private const val SECONDARY_LIVE_MODEL = "gemini-3.1-flash-live-preview"
-private const val GEMINI_BIDI_WS_BASE =
-    "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 private const val MAX_PRE_CONNECT_PCM_BYTES = 16_000 * 2 * 5 // 5s at 16kHz PCM16
 
 private data class DirectLiveProfile(
@@ -201,7 +199,7 @@ class GeminiLiveStreamEngine(
         val profile = activeDirectProfiles.getOrNull(activeDirectProfileIndex) ?: return
         val listener = activeDirectListener ?: return
 
-        val url = "$GEMINI_BIDI_WS_BASE?key=$activeDirectApiKey"
+        val url = ProviderRequestAuth.geminiLiveWebSocketUrl(activeDirectApiKey)
         val request = Request.Builder()
             .url(url)
             .build()

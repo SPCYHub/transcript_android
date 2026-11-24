@@ -15,7 +15,6 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 private const val TAG = "OpenAiRealtimeStream"
-private const val REALTIME_TRANSCRIPTION_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
 // 24kHz * 2 bytes/sample * 5 seconds max pre-connect audio buffer
 private const val MAX_PRE_CONNECT_BUFFER_BYTES = 24_000 * 2 * 5
 // OpenAI requires >= 100ms (4,800 bytes at 24kHz PCM16) to commit a buffer without error.
@@ -132,8 +131,8 @@ class OpenAiRealtimeStreamEngine(
         lastErrorMessage = null
 
         val request = Request.Builder()
-            .url(REALTIME_TRANSCRIPTION_URL)
-            .header("Authorization", "Bearer $effectiveKey")
+            .url(ProviderRequestAuth.OPENAI_REALTIME_TRANSCRIPTION_URL)
+            .header("Authorization", ProviderRequestAuth.openAiAuthorization(effectiveKey))
             .build()
 
         activeSocket = wsClient.newWebSocket(
