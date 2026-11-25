@@ -1,9 +1,18 @@
 package com.example.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -47,6 +56,12 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.core.LocalStudioHaptics
@@ -70,6 +85,7 @@ fun StudioThumbZoneDock(
     modifier: Modifier = Modifier
 ) {
     val haptics = LocalStudioHaptics.current
+    val reduceMotion = rememberReduceMotionEnabled()
     val liveState = uiState as? StudioUiState.LiveStreaming
     val isLive = liveState != null
     val isProcessing = uiState is StudioUiState.Processing
@@ -82,8 +98,8 @@ fun StudioThumbZoneDock(
     val latestOnStopLive by rememberUpdatedState(onStopLive)
 
     val padScale by animateFloatAsState(
-        targetValue = if (isPressed) 0.97f else 1f,
-        animationSpec = spring(stiffness = Spring.StiffnessMedium),
+        targetValue = if (isPressed && !reduceMotion) 0.97f else 1f,
+        animationSpec = if (reduceMotion) snap() else spring(stiffness = Spring.StiffnessMedium),
         label = "mic_pad_scale"
     )
 
@@ -93,6 +109,7 @@ fun StudioThumbZoneDock(
         } else {
             MaterialTheme.colorScheme.outlineVariant
         },
+        animationSpec = if (reduceMotion) snap() else tween(durationMillis = 180),
         label = "dock_border"
     )
 
@@ -117,6 +134,11 @@ fun StudioThumbZoneDock(
                 DockQuickChip(
                     label = if (displayFormat == CantoneseFormat.WRITTEN_CHINESE) "書面語" else "口語",
                     active = true,
+                    semanticLabel = if (displayFormat == CantoneseFormat.WRITTEN_CHINESE) {
+                        "Transcript format: Standard Written Chinese. Tap to switch to Spoken Cantonese"
+                    } else {
+                        "Transcript format: Spoken Cantonese. Tap to switch to Standard Written Chinese"
+                    },
                     onClick = {
                         haptics.tick()
                         onToggleFormat()
@@ -127,6 +149,8 @@ fun StudioThumbZoneDock(
                     label = if (autoCopyEnabled) "Auto-Copy" else "Manual Copy",
                     active = autoCopyEnabled,
                     showCheck = autoCopyEnabled,
+                    semanticLabel = "Auto-copy finished transcripts",
+                    semanticState = if (autoCopyEnabled) "Enabled" else "Paused",
                     onClick = {
                         haptics.toggle(!autoCopyEnabled)
                         onToggleAutoCopy()
@@ -221,6 +245,17 @@ fun StudioThumbZoneDock(
                         MaterialTheme.colorScheme.onPrimary
                     }
 
+                    val padSemanticLabel = when {
+                        isProcessing -> "Transcribing audio, microphone disabled"
+                        isLive -> "Stop live Cantonese transcription"
+                        else -> "Start hands-free live Cantonese transcription, or hold to speak"
+                    }
+                    val padSemanticState = when {
+                        isProcessing -> "Processing"
+                        isLive -> "Recording"
+                        else -> "Idle"
+                    }
+
                     Box(
                         modifier = Modifier
                             .weight(1f)
@@ -228,6 +263,22 @@ fun StudioThumbZoneDock(
                             .scale(padScale)
                             .clip(RoundedCornerShape(18.dp))
                             .background(primaryBrush)
+                            .semantics(mergeDescendants = true) {
+                                role = Role.Button
+                                contentDescription = padSemanticLabel
+                                stateDescription = padSemanticState
+                                onClick(label = padSemanticLabel) {
+                                    if (latestIsProcessing) return@onClick false
+                                    if (latestIsLive) {
+                                        haptics.recordStop()
+                                        latestOnStopLive()
+                                    } else {
+                                        haptics.recordStart()
+                                        latestOnStartLive(false)
+                                    }
+                                    true
+                                }
+                            }
                             .pointerInput(Unit) {
                                 detectTapGestures(
                                     onPress = {
@@ -279,7 +330,7 @@ fun StudioThumbZoneDock(
                                         isLive -> Icons.Filled.GraphicEq
                                         else -> Icons.Filled.Mic
                                     },
-                                    contentDescription = if (isLive) "Live streaming microphone" else "Hold to speak or tap for hands-free",
+                                    contentDescription = null,
                                     tint = padFg,
                                     modifier = Modifier.size(22.dp)
                                 )
@@ -302,14 +353,18 @@ fun StudioThumbZoneDock(
                                         "Zero-wait real-time Cantonese stream"
                                     },
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = padFg.copy(alpha = 0.85f)
+                                    color = padFg
                                 )
                             }
                         }
                     }
                 }
 
-                if (isLive) {
+                AnimatedVisibility(
+                    visible = isLive,
+                    enter = if (reduceMotion) EnterTransition.None else fadeIn() + expandHorizontally(),
+                    exit = if (reduceMotion) ExitTransition.None else fadeOut() + shrinkHorizontally()
+                ) {
                     Surface(
                         shape = RoundedCornerShape(18.dp),
                         color = MaterialTheme.colorScheme.surfaceContainerHigh
@@ -342,7 +397,9 @@ private fun DockQuickChip(
     active: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    showCheck: Boolean = false
+    showCheck: Boolean = false,
+    semanticLabel: String = label,
+    semanticState: String? = null
 ) {
     Surface(
         shape = RoundedCornerShape(12.dp),
@@ -354,6 +411,13 @@ private fun DockQuickChip(
         modifier = modifier
             .minimumInteractiveComponentSize()
             .clip(RoundedCornerShape(12.dp))
+            .semantics(mergeDescendants = true) {
+                role = Role.Button
+                contentDescription = semanticLabel
+                if (semanticState != null) {
+                    stateDescription = semanticState
+                }
+            }
             .clickable(onClick = onClick)
     ) {
         Row(

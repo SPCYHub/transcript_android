@@ -1,6 +1,9 @@
 package com.example.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -17,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -53,7 +57,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -64,6 +76,7 @@ import com.example.model.ApiKeyStatus
 import com.example.model.KeyTestResult
 import com.example.model.ThemePreference
 import com.example.model.UserPreferences
+import com.example.ui.components.rememberReduceMotionEnabled
 
 @Composable
 fun SettingsScreen(
@@ -87,6 +100,7 @@ fun SettingsScreen(
     modifier: Modifier = Modifier
 ) {
     val haptics = LocalStudioHaptics.current
+    val reduceMotion = rememberReduceMotionEnabled()
     var geminiDraft by remember { mutableStateOf("") }
     var showGeminiInput by remember { mutableStateOf(false) }
     var modelDraft by remember(apiKeyStatus.customGeminiModel) {
@@ -123,7 +137,8 @@ fun SettingsScreen(
                 Text(
                     text = "API Keys & Preferences",
                     style = MaterialTheme.typography.headlineMedium,
-                    color = MaterialTheme.colorScheme.onBackground
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.semantics { heading() }
                 )
             }
 
@@ -182,7 +197,8 @@ fun SettingsScreen(
                             )
                             Text(
                                 text = "Gemini API Key",
-                                style = MaterialTheme.typography.titleMedium
+                                style = MaterialTheme.typography.titleMedium,
+                                modifier = Modifier.semantics { heading() }
                             )
                         }
                         StatusBadge(
@@ -349,7 +365,8 @@ fun SettingsScreen(
                             )
                             Text(
                                 text = "OpenAI API Key",
-                                style = MaterialTheme.typography.titleMedium
+                                style = MaterialTheme.typography.titleMedium,
+                                modifier = Modifier.semantics { heading() }
                             )
                         }
                         StatusBadge(
@@ -502,7 +519,11 @@ fun SettingsScreen(
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.primary
                         )
-                        Text(text = "Studio Preferences", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            text = "Studio Preferences",
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.semantics { heading() }
+                        )
                     }
 
                     // Theme segmented selector
@@ -514,19 +535,34 @@ fun SettingsScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(4.dp),
+                                .padding(4.dp)
+                                .selectableGroup(),
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             ThemePreference.entries.forEach { option ->
                                 val selected = option == preferences.themePreference
+                                val tabBg by animateColorAsState(
+                                    targetValue = if (selected) MaterialTheme.colorScheme.surface else Color.Transparent,
+                                    animationSpec = if (reduceMotion) snap() else tween(durationMillis = 160),
+                                    label = "theme_tab_bg"
+                                )
+                                val tabFg by animateColorAsState(
+                                    targetValue = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    animationSpec = if (reduceMotion) snap() else tween(durationMillis = 160),
+                                    label = "theme_tab_fg"
+                                )
                                 Surface(
                                     shape = RoundedCornerShape(10.dp),
-                                    color = if (selected) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surface.copy(alpha = 0f),
+                                    color = tabBg,
                                     shadowElevation = if (selected) 1.dp else 0.dp,
                                     modifier = Modifier
                                         .weight(1f)
                                         .minimumInteractiveComponentSize()
                                         .clip(RoundedCornerShape(10.dp))
+                                        .semantics {
+                                            role = Role.Tab
+                                            this.selected = selected
+                                        }
                                         .clickable {
                                             if (!selected) haptics.tick()
                                             onSelectTheme(option)
@@ -537,7 +573,7 @@ fun SettingsScreen(
                                         Text(
                                             text = option.label,
                                             style = MaterialTheme.typography.labelLarge,
-                                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            color = tabFg,
                                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                                             modifier = Modifier.padding(vertical = 8.dp)
                                         )
@@ -642,7 +678,11 @@ fun SettingsScreen(
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.primary
                         )
-                        Text(text = "Cantonese Vocabulary Hints", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            text = "Cantonese Vocabulary Hints",
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.semantics { heading() }
+                        )
                     }
                     Text(
                         text = "Prioritize Hong Kong names, districts, or work jargon across Gemini and OpenAI engines.",
@@ -760,6 +800,7 @@ private fun KeyTestBanner(result: KeyTestResult) {
         is KeyTestResult.Idle -> Unit
         is KeyTestResult.Testing -> {
             Row(
+                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -778,7 +819,9 @@ private fun KeyTestBanner(result: KeyTestResult) {
             Surface(
                 shape = RoundedCornerShape(12.dp),
                 color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { liveRegion = LiveRegionMode.Polite }
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
@@ -803,7 +846,9 @@ private fun KeyTestBanner(result: KeyTestResult) {
             Surface(
                 shape = RoundedCornerShape(12.dp),
                 color = MaterialTheme.colorScheme.errorContainer,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { liveRegion = LiveRegionMode.Polite }
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),

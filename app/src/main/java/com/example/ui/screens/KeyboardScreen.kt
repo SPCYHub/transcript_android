@@ -5,6 +5,8 @@ import android.content.Intent
 import android.provider.Settings
 import android.view.inputmethod.InputMethodManager
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -15,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -51,6 +54,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -62,6 +69,7 @@ import com.example.model.CantoneseFormat
 import com.example.model.RoutingMode
 import com.example.model.UserPreferences
 import com.example.ui.components.VoiceKeyboardDeck
+import com.example.ui.components.rememberReduceMotionEnabled
 import com.example.viewmodel.SandboxState
 
 @Composable
@@ -86,6 +94,7 @@ fun KeyboardScreen(
 ) {
     val context = LocalContext.current
     val haptics = LocalStudioHaptics.current
+    val reduceMotion = rememberReduceMotionEnabled()
     val lifecycleOwner = LocalLifecycleOwner.current
 
     var imeStatus by remember { mutableStateOf(inspectImeStatus(context)) }
@@ -134,7 +143,8 @@ fun KeyboardScreen(
                     Text(
                         text = "Cantonese Voice IME",
                         style = MaterialTheme.typography.headlineMedium,
-                        color = MaterialTheme.colorScheme.onBackground
+                        color = MaterialTheme.colorScheme.onBackground,
+                        modifier = Modifier.semantics { heading() }
                     )
                 }
 
@@ -214,7 +224,8 @@ fun KeyboardScreen(
                             Column {
                                 Text(
                                     text = "Type in Any App",
-                                    style = MaterialTheme.typography.titleMedium
+                                    style = MaterialTheme.typography.titleMedium,
+                                    modifier = Modifier.semantics { heading() }
                                 )
                                 Text(
                                     text = "WhatsApp, Notes, Signal, Chrome",
@@ -347,7 +358,8 @@ fun KeyboardScreen(
                             )
                             Text(
                                 text = "Live Dictation Composer",
-                                style = MaterialTheme.typography.titleMedium
+                                style = MaterialTheme.typography.titleMedium,
+                                modifier = Modifier.semantics { heading() }
                             )
                         }
                         Text(
@@ -362,7 +374,7 @@ fun KeyboardScreen(
                         onValueChange = onSandboxTextChange,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(124.dp)
+                            .heightIn(min = 124.dp, max = 220.dp)
                             .testTag("keyboard_sandbox_input"),
                         placeholder = {
                             Text(
@@ -377,11 +389,17 @@ fun KeyboardScreen(
                         shape = RoundedCornerShape(16.dp)
                     )
 
-                    AnimatedVisibility(visible = sandboxState.livePartial.isNotBlank()) {
+                    AnimatedVisibility(
+                        visible = sandboxState.livePartial.isNotBlank(),
+                        enter = if (reduceMotion) EnterTransition.None else androidx.compose.animation.fadeIn(),
+                        exit = if (reduceMotion) ExitTransition.None else androidx.compose.animation.fadeOut()
+                    ) {
                         Surface(
                             shape = RoundedCornerShape(12.dp),
                             color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .semantics { liveRegion = LiveRegionMode.Polite }
                         ) {
                             Text(
                                 text = "Streaming: ${sandboxState.livePartial} ▍",

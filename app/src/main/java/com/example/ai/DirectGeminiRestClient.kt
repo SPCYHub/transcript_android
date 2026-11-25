@@ -75,7 +75,7 @@ class DirectGeminiRestClient {
         val errMsg = primary.exceptionOrNull()?.message.orEmpty()
         val hasOptionalConfig = mediaResolution != null || disableThinking || enableHighThinking
         if (hasOptionalConfig && errMsg.contains("(400)")) {
-            Log.w(TAG, "Retrying $modelName without optional thinking/mediaResolution fields after 400: $errMsg")
+            Log.w(TAG, "Retrying $modelName without optional thinking/mediaResolution fields after 400: ${ProviderRequestAuth.redactSecrets(errMsg)}")
             return@withContext executeGenerateContent(
                 apiKey = apiKey,
                 modelName = modelName,
@@ -144,8 +144,9 @@ class DirectGeminiRestClient {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "Direct Gemini REST call failed ($modelName)", e)
-            Result.failure(e)
+            val safeMsg = ProviderRequestAuth.redactSecrets(e.localizedMessage).ifBlank { "Gemini REST request failed." }
+            Log.e(TAG, "Direct Gemini REST call failed ($modelName): $safeMsg")
+            Result.failure(IllegalStateException(safeMsg))
         }
     }
 
@@ -323,13 +324,15 @@ class DirectGeminiRestClient {
     }
 
     private fun parseRestError(httpCode: Int, rawBody: String, modelName: String): String {
-        val apiMessage = runCatching {
-            JSONObject(rawBody).optJSONObject("error")?.optString("message")
-        }.getOrNull().orEmpty()
+        val apiMessage = ProviderRequestAuth.redactSecrets(
+            runCatching {
+                JSONObject(rawBody).optJSONObject("error")?.optString("message")
+            }.getOrNull().orEmpty()
+        )
 
         return when {
             apiMessage.isNotBlank() -> "Gemini API ($httpCode): $apiMessage"
-            httpCode == 400 -> "Gemini API rejected the request (400). Verify your API key or custom model '$modelName'."
+            httpCode == 400 -> "Gemini API rejected the request (400). Verify your API key or custom model."
             httpCode == 401 || httpCode == 403 -> "Invalid Gemini API key ($httpCode). Check your personal key in Keys."
             httpCode == 404 -> "Gemini model '$modelName' was not found (404). Update your custom model in Keys."
             httpCode == 429 -> "Gemini API quota or rate limit reached (429). Retry shortly or switch engine."

@@ -1,5 +1,6 @@
 package com.example.ime
 
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
@@ -18,6 +19,7 @@ class ImeWaveformView(context: Context) : View(context) {
     private val barCount = 28
     private val displayBars = FloatArray(barCount) { idleEnvelope(it) }
     private var isLive = false
+    private var isSettlingToIdle = false
 
     private var activeColor = Color.parseColor("#E11D48")
     private var softActiveColor = Color.parseColor("#66E11D48")
@@ -32,6 +34,10 @@ class ImeWaveformView(context: Context) : View(context) {
         strokeWidth = dpToPx(1f)
     }
     private val barRect = RectF()
+
+    init {
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+    }
 
     fun applyPalette(
         activeCrimson: Int,
@@ -48,14 +54,20 @@ class ImeWaveformView(context: Context) : View(context) {
     fun updateWaveform(amplitudes: List<Float>, live: Boolean) {
         isLive = live
         if (!live) {
-            for (i in 0 until barCount) {
-                val target = idleEnvelope(i)
-                displayBars[i] = displayBars[i] * 0.65f + target * 0.35f
+            if (!ValueAnimator.areAnimatorsEnabled()) {
+                for (i in 0 until barCount) {
+                    displayBars[i] = idleEnvelope(i)
+                }
+                isSettlingToIdle = false
+                invalidate()
+                return
             }
+            isSettlingToIdle = stepIdleDecay()
             invalidate()
             return
         }
 
+        isSettlingToIdle = false
         if (amplitudes.isEmpty()) {
             for (i in 0 until barCount) {
                 displayBars[i] = 0.14f
@@ -66,10 +78,29 @@ class ImeWaveformView(context: Context) : View(context) {
                 val srcIndex = ((i.toFloat() / (barCount - 1)) * (srcSize - 1)).toInt()
                     .coerceIn(0, srcSize - 1)
                 val target = amplitudes[srcIndex].coerceIn(0.08f, 1f)
-                displayBars[i] = displayBars[i] * 0.38f + target * 0.62f
+                displayBars[i] = if (ValueAnimator.areAnimatorsEnabled()) {
+                    displayBars[i] * 0.38f + target * 0.62f
+                } else {
+                    target
+                }
             }
         }
         invalidate()
+    }
+
+    private fun stepIdleDecay(): Boolean {
+        var needsAnotherFrame = false
+        for (i in 0 until barCount) {
+            val target = idleEnvelope(i)
+            val next = displayBars[i] * 0.65f + target * 0.35f
+            if (abs(next - target) <= 0.008f) {
+                displayBars[i] = target
+            } else {
+                displayBars[i] = next
+                needsAnotherFrame = true
+            }
+        }
+        return needsAnotherFrame
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -99,6 +130,13 @@ class ImeWaveformView(context: Context) : View(context) {
             }
             barRect.set(left, centerY - halfH, left + barWidth, centerY + halfH)
             canvas.drawRoundRect(barRect, radius, radius, barPaint)
+        }
+
+        if (!isLive && isSettlingToIdle && ValueAnimator.areAnimatorsEnabled()) {
+            isSettlingToIdle = stepIdleDecay()
+            postInvalidateOnAnimation()
+        } else if (!isLive && !ValueAnimator.areAnimatorsEnabled()) {
+            isSettlingToIdle = false
         }
     }
 

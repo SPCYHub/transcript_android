@@ -38,10 +38,14 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
@@ -59,22 +63,29 @@ fun LiveStreamingCanvasCard(
     onOpenKeys: () -> Unit
 ) {
     val haptics = LocalStudioHaptics.current
-    val pulseTransition = rememberInfiniteTransition(label = "live_cursor_pulse")
-    val cursorAlpha by pulseTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = 0.15f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 520),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "cursor_alpha"
-    )
+    val reduceMotion = rememberReduceMotionEnabled()
+    val cursorAlpha = if (reduceMotion) {
+        1f
+    } else {
+        val pulseTransition = rememberInfiniteTransition(label = "live_cursor_pulse")
+        val animatedAlpha by pulseTransition.animateFloat(
+            initialValue = 1f,
+            targetValue = 0.15f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 520),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "cursor_alpha"
+        )
+        animatedAlpha
+    }
 
     val hasAnyText = state.confirmedText.isNotBlank() || state.partialText.isNotBlank()
 
     Surface(
         modifier = Modifier
             .fillMaxWidth()
+            .semantics { liveRegion = LiveRegionMode.Polite }
             .testTag("live_streaming_card"),
         shape = RoundedCornerShape(24.dp),
         color = MaterialTheme.colorScheme.surface,
@@ -172,21 +183,31 @@ fun LiveStreamingCanvasCard(
                         } else {
                             val primaryColor = MaterialTheme.colorScheme.primary
                             val inkColor = MaterialTheme.colorScheme.onSurface
-                            val styled = buildAnnotatedString {
-                                withStyle(SpanStyle(color = inkColor)) {
-                                    append(state.confirmedText)
-                                }
-                                if (state.partialText.isNotEmpty()) {
-                                    if (state.confirmedText.isNotEmpty()) append(" ")
-                                    withStyle(
-                                        SpanStyle(
-                                            color = primaryColor,
-                                            fontStyle = FontStyle.Italic
-                                        )
-                                    ) {
-                                        append(state.partialText)
+                            val baseAnnotated = remember(
+                                state.confirmedText,
+                                state.partialText,
+                                primaryColor,
+                                inkColor
+                            ) {
+                                buildAnnotatedString {
+                                    withStyle(SpanStyle(color = inkColor)) {
+                                        append(state.confirmedText)
+                                    }
+                                    if (state.partialText.isNotEmpty()) {
+                                        if (state.confirmedText.isNotEmpty()) append(" ")
+                                        withStyle(
+                                            SpanStyle(
+                                                color = primaryColor,
+                                                fontStyle = FontStyle.Italic
+                                            )
+                                        ) {
+                                            append(state.partialText)
+                                        }
                                     }
                                 }
+                            }
+                            val styled = buildAnnotatedString {
+                                append(baseAnnotated)
                                 withStyle(SpanStyle(color = primaryColor.copy(alpha = cursorAlpha))) {
                                     append(" ▍")
                                 }
@@ -261,6 +282,7 @@ fun ProcessingStatusCard(state: StudioUiState.Processing) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
+            .semantics { liveRegion = LiveRegionMode.Polite }
             .testTag("processing_status_card"),
         shape = RoundedCornerShape(22.dp),
         color = MaterialTheme.colorScheme.surface,
@@ -309,6 +331,7 @@ fun ErrorRecoveryCard(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
+            .semantics { liveRegion = LiveRegionMode.Polite }
             .testTag("error_status_card"),
         shape = RoundedCornerShape(22.dp),
         color = MaterialTheme.colorScheme.errorContainer,

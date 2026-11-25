@@ -1,6 +1,7 @@
 package com.example.data
 
 import android.content.Context
+import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -90,8 +91,12 @@ class SecureKeyStore(appContext: Context) {
     fun saveCustomGeminiModel(modelName: String) {
         val clean = modelName.trim()
         prefs.edit().apply {
-            if (clean.isEmpty()) remove(KEY_CUSTOM_GEMINI_MODEL)
-            else putString(KEY_CUSTOM_GEMINI_MODEL, clean)
+            if (clean.isEmpty()) {
+                remove(KEY_CUSTOM_GEMINI_MODEL)
+            } else {
+                val safeModel = ProviderRequestAuth.sanitizeGeminiModelName(clean)
+                putString(KEY_CUSTOM_GEMINI_MODEL, safeModel)
+            }
         }.apply()
         refreshStatus()
     }
@@ -127,7 +132,13 @@ class SecureKeyStore(appContext: Context) {
     fun hasDirectGeminiKey(): Boolean = !resolveDirectGeminiKey().isNullOrBlank()
 
     fun resolveCustomGeminiModel(): String? {
-        return prefs.getString(KEY_CUSTOM_GEMINI_MODEL, null)?.trim()?.takeIf { it.isNotBlank() }
+        val raw = prefs.getString(KEY_CUSTOM_GEMINI_MODEL, null)?.trim()?.takeIf { it.isNotBlank() }
+            ?: return null
+        return if (ProviderRequestAuth.isValidGeminiModelName(raw)) {
+            ProviderRequestAuth.sanitizeGeminiModelName(raw)
+        } else {
+            null
+        }
     }
 
     /**
@@ -169,13 +180,17 @@ class SecureKeyStore(appContext: Context) {
                         JSONObject(body).optJSONObject("error")?.optString("message")
                     }.getOrNull().orEmpty()
                     KeyTestResult.Invalid(
-                        msg.ifBlank { "Gemini API rejected key (HTTP ${response.code})" }
+                        ProviderRequestAuth.redactSecrets(msg).ifBlank {
+                            "Gemini API rejected key (HTTP ${response.code})"
+                        }
                     )
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Gemini key verification failed", e)
-            KeyTestResult.Invalid(e.localizedMessage ?: "Network error while verifying Gemini key")
+            val safeError = ProviderRequestAuth.redactSecrets(e.localizedMessage)
+                .ifBlank { "Network error while verifying Gemini key" }
+            Log.e(TAG, "Gemini key verification failed: $safeError")
+            KeyTestResult.Invalid(safeError)
         }
     }
 
@@ -200,13 +215,17 @@ class SecureKeyStore(appContext: Context) {
                         JSONObject(body).optJSONObject("error")?.optString("message")
                     }.getOrNull().orEmpty()
                     KeyTestResult.Invalid(
-                        msg.ifBlank { "OpenAI rejected key (HTTP ${response.code})" }
+                        ProviderRequestAuth.redactSecrets(msg).ifBlank {
+                            "OpenAI rejected key (HTTP ${response.code})"
+                        }
                     )
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "OpenAI key verification failed", e)
-            KeyTestResult.Invalid(e.localizedMessage ?: "Network error while verifying OpenAI key")
+            val safeError = ProviderRequestAuth.redactSecrets(e.localizedMessage)
+                .ifBlank { "Network error while verifying OpenAI key" }
+            Log.e(TAG, "OpenAI key verification failed: $safeError")
+            KeyTestResult.Invalid(safeError)
         }
     }
 
@@ -248,23 +267,41 @@ class SecureKeyStore(appContext: Context) {
         return decryptValue(stored)
     }
 
+    private fun isRobolectricRuntime(): Boolean {
+        return Build.FINGERPRINT.equals("robolectric", ignoreCase = true) ||
+            Build.HARDWARE.equals("robolectric", ignoreCase = true)
+    }
+
     private fun encryptValue(plainText: String): String {
         return try {
-            val secretKey = getOrCreateKeyStoreKey()
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.ENCRYPT_MODE, secretKey)
-            val iv = cipher.iv
-            val cipherText = cipher.doFinal(plainText.toByteArray(Charsets.UTF_8))
-            val combined = ByteArray(1 + iv.size + cipherText.size)
-            combined[0] = iv.size.toByte()
-            System.arraycopy(iv, 0, combined, 1, iv.size)
-            System.arraycopy(cipherText, 0, combined, 1 + iv.size, cipherText.size)
-            "ks1:" + Base64.encodeToString(combined, Base64.NO_WRAP)
-        } catch (e: Exception) {
-            // Robolectric / non-Keystore JVM test fallback only; real Android devices use AndroidKeyStore.
-            Log.w(TAG, "AndroidKeyStore unavailable in this runtime; falling back to private encoding", e)
-            "b64:" + Base64.encodeToString(plainText.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+            encryptWithKeyStore(plainText)
+        } catch (firstError: Exception) {
+            if (isRobolectricRuntime()) {
+                Log.w(TAG, "AndroidKeyStore unavailable in Robolectric runtime; using test encoding")
+                return "b64:" + Base64.encodeToString(plainText.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+            }
+            // If an existing KeyStore entry became invalidated, clear and regenerate once cleanly.
+            try {
+                deleteKeyStoreKey()
+                encryptWithKeyStore(plainText)
+            } catch (retryError: Exception) {
+                Log.e(TAG, "Hardware-backed KeyStore encryption failed: ${retryError.javaClass.simpleName}")
+                throw IllegalStateException("Secure device keystore is unavailable for API key storage.", retryError)
+            }
         }
+    }
+
+    private fun encryptWithKeyStore(plainText: String): String {
+        val secretKey = getOrCreateKeyStoreKey()
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+        val iv = cipher.iv
+        val cipherText = cipher.doFinal(plainText.toByteArray(Charsets.UTF_8))
+        val combined = ByteArray(1 + iv.size + cipherText.size)
+        combined[0] = iv.size.toByte()
+        System.arraycopy(iv, 0, combined, 1, iv.size)
+        System.arraycopy(cipherText, 0, combined, 1 + iv.size, cipherText.size)
+        return "ks1:" + Base64.encodeToString(combined, Base64.NO_WRAP)
     }
 
     private fun decryptValue(encoded: String): String? {
@@ -283,13 +320,24 @@ class SecureKeyStore(appContext: Context) {
                     String(cipher.doFinal(cipherText), Charsets.UTF_8)
                 }
                 encoded.startsWith("b64:") -> {
+                    // Fail closed on real Android devices: never trust unencrypted b64 entries outside tests.
+                    if (!isRobolectricRuntime()) return null
                     String(Base64.decode(encoded.removePrefix("b64:"), Base64.NO_WRAP), Charsets.UTF_8)
                 }
                 else -> null
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed decrypting stored API key", e)
+            Log.e(TAG, "Failed decrypting stored API key: ${e.javaClass.simpleName}")
             null
+        }
+    }
+
+    private fun deleteKeyStoreKey() {
+        runCatching {
+            val keyStore = KeyStore.getInstance(KEYSTORE_PROVIDER).apply { load(null) }
+            if (keyStore.containsAlias(KEY_ALIAS)) {
+                keyStore.deleteEntry(KEY_ALIAS)
+            }
         }
     }
 

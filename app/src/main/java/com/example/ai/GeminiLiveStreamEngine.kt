@@ -20,8 +20,6 @@ private const val PRIMARY_TRANSCRIBE_LIVE_MODEL = "gemini-3.5-transcribe-live"
 private const val FALLBACK_LIVE_MODEL = "gemini-3.8-live"
 private const val SECONDARY_LIVE_MODEL = "gemini-3.1-flash-live-preview"
 private const val LEGACY_LIVE_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
-private const val GEMINI_BIDI_WS_BASE =
-    "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 private const val MAX_PRE_CONNECT_PCM_BYTES = 16_000 * 2 * 5 // 5s at 16kHz PCM16
 
 private data class DirectLiveProfile(
@@ -204,7 +202,7 @@ class GeminiLiveStreamEngine(
         val profile = activeDirectProfiles.getOrNull(activeDirectProfileIndex) ?: return
         val listener = activeDirectListener ?: return
 
-        val url = "$GEMINI_BIDI_WS_BASE?key=$activeDirectApiKey"
+        val url = ProviderRequestAuth.geminiLiveWebSocketUrl(activeDirectApiKey)
         val request = Request.Builder()
             .url(url)
             .build()
@@ -240,10 +238,12 @@ class GeminiLiveStreamEngine(
                     if (isClosed) return
 
                     val code = response?.code
-                    val msg = response?.message?.takeIf { it.isNotBlank() }
+                    val rawMsg = response?.message?.takeIf { it.isNotBlank() }
                         ?: t.localizedMessage
                         ?: "Gemini Live WebSocket connection failed"
-                    Log.e(TAG, "Direct Gemini Live WS failure (${profile.modelName}): code=$code msg=$msg", t)
+                    val msg = ProviderRequestAuth.redactSecrets(rawMsg)
+                        .ifBlank { "Gemini Live WebSocket connection failed" }
+                    Log.e(TAG, "Direct Gemini Live WS failure (${profile.modelName}): code=$code msg=$msg")
 
                     if (!wasReady && code != 401 && code != 403 && tryAdvanceDirectProfile()) {
                         return
@@ -258,12 +258,13 @@ class GeminiLiveStreamEngine(
                     isReady = false
                     if (isClosed) return
 
-                    Log.w(TAG, "Direct Gemini Live WS closed (${profile.modelName}): code=$code reason=$reason")
-                    if (!wasReady && code != 1000 && !isDirectAuthError(reason) && tryAdvanceDirectProfile()) {
+                    val safeReason = ProviderRequestAuth.redactSecrets(reason)
+                    Log.w(TAG, "Direct Gemini Live WS closed (${profile.modelName}): code=$code reason=$safeReason")
+                    if (!wasReady && code != 1000 && !isDirectAuthError(safeReason) && tryAdvanceDirectProfile()) {
                         return
                     }
-                    if (code != 1000 && reason.isNotBlank()) {
-                        listener.onError("Gemini Live closed ($code): $reason")
+                    if (code != 1000 && safeReason.isNotBlank()) {
+                        listener.onError("Gemini Live closed ($code): $safeReason")
                     } else {
                         listener.onClosed()
                     }
@@ -368,7 +369,8 @@ class GeminiLiveStreamEngine(
             }
 
             root.optJSONObject("error")?.let { err ->
-                val msg = err.optString("message").ifBlank { "Gemini Live API error" }
+                val msg = ProviderRequestAuth.redactSecrets(err.optString("message"))
+                    .ifBlank { "Gemini Live API error" }
                 Log.e(TAG, "Direct Gemini Live server error (${profile.modelName}): $msg")
                 if (!isReady && !isDirectAuthError(msg) && tryAdvanceDirectProfile()) {
                     return

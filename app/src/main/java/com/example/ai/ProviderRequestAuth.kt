@@ -14,11 +14,43 @@ object ProviderRequestAuth {
     const val OPENAI_REALTIME_TRANSCRIPTION_URL =
         "wss://api.openai.com/v1/realtime?intent=transcription"
 
-    fun geminiGenerateContentUrl(modelName: String): String =
-        "$GEMINI_REST_BASE/$modelName:generateContent"
+    private val MODEL_NAME_REGEX = Regex("^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
+    private val KEY_QUERY_REGEX = Regex("([?&]key=)[^&\\s\"']+", RegexOption.IGNORE_CASE)
+    private val BEARER_REGEX = Regex("(Bearer\\s+)[A-Za-z0-9._\\-+/=]+", RegexOption.IGNORE_CASE)
+    private val GOOGLE_KEY_REGEX = Regex("AIza[0-9A-Za-z_-]{20,}")
+    private val OPENAI_KEY_REGEX = Regex("sk-[A-Za-z0-9_-]{12,}")
 
-    fun geminiStreamGenerateContentUrl(modelName: String): String =
-        "$GEMINI_REST_BASE/$modelName:streamGenerateContent?alt=sse"
+    fun sanitizeGeminiModelName(rawModel: String): String {
+        val stripped = rawModel.trim().removePrefix("models/").trim()
+        require(MODEL_NAME_REGEX.matches(stripped)) {
+            "Invalid Gemini model name. Use letters, numbers, dots, underscores, or hyphens only."
+        }
+        return stripped
+    }
+
+    fun isValidGeminiModelName(rawModel: String): Boolean {
+        val stripped = rawModel.trim().removePrefix("models/").trim()
+        return MODEL_NAME_REGEX.matches(stripped)
+    }
+
+    fun redactSecrets(text: String?): String {
+        if (text.isNullOrEmpty()) return ""
+        return text
+            .replace(KEY_QUERY_REGEX, "$1[REDACTED]")
+            .replace(BEARER_REGEX, "$1[REDACTED]")
+            .replace(GOOGLE_KEY_REGEX, "[REDACTED_KEY]")
+            .replace(OPENAI_KEY_REGEX, "[REDACTED_KEY]")
+    }
+
+    fun geminiGenerateContentUrl(modelName: String): String {
+        val safeModel = sanitizeGeminiModelName(modelName)
+        return "$GEMINI_REST_BASE/$safeModel:generateContent"
+    }
+
+    fun geminiStreamGenerateContentUrl(modelName: String): String {
+        val safeModel = sanitizeGeminiModelName(modelName)
+        return "$GEMINI_REST_BASE/$safeModel:streamGenerateContent?alt=sse"
+    }
 
     fun geminiLiveWebSocketUrl(apiKey: String): String =
         "$GEMINI_BIDI_WS_BASE?key=$apiKey"

@@ -1,5 +1,7 @@
 package com.example.ui.components
 
+import android.animation.ValueAnimator
+import android.provider.Settings
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -7,6 +9,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -22,6 +25,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -29,7 +33,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -40,15 +48,41 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.core.LocalStudioHaptics
 import com.example.model.ApiKeyStatus
 import com.example.model.RoutingMode
+import kotlinx.coroutines.delay
 import java.util.Locale
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.sin
+
+@Composable
+fun rememberReduceMotionEnabled(): Boolean {
+    if (LocalInspectionMode.current) return false
+    val context = LocalContext.current
+    return remember(context) {
+        val scale = runCatching {
+            Settings.Global.getFloat(
+                context.contentResolver,
+                Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f
+            )
+        }.getOrDefault(1f)
+        scale == 0f || !ValueAnimator.areAnimatorsEnabled()
+    }
+}
 
 fun Modifier.studioGridBackground(
     dotColor: Color,
@@ -96,22 +130,32 @@ fun Modifier.studioGridBackground(
 fun AmbientAcousticEmblem(
     modifier: Modifier = Modifier
 ) {
-    val transition = rememberInfiniteTransition(label = "ambient_acoustic_rings")
-    val phase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = (2.0 * PI).toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 3600),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "ambient_phase"
-    )
+    val reduceMotion = rememberReduceMotionEnabled()
+    val phase = if (reduceMotion) {
+        0.9f
+    } else {
+        val transition = rememberInfiniteTransition(label = "ambient_acoustic_rings")
+        val animatedPhase by transition.animateFloat(
+            initialValue = 0f,
+            targetValue = (2.0 * PI).toFloat(),
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 3600),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "ambient_phase"
+        )
+        animatedPhase
+    }
 
     val primary = MaterialTheme.colorScheme.primary
     val primaryContainer = MaterialTheme.colorScheme.primaryContainer
     val outline = MaterialTheme.colorScheme.outline
 
-    Canvas(modifier = modifier.size(116.dp)) {
+    Canvas(
+        modifier = modifier
+            .size(116.dp)
+            .clearAndSetSemantics { }
+    ) {
         val center = Offset(size.width / 2f, size.height / 2f)
         val outerRadius = size.minDimension * 0.48f
         val midRadius = size.minDimension * 0.36f
@@ -153,8 +197,8 @@ fun AmbientAcousticEmblem(
         val maxHalf = innerRadius * 0.58f
 
         for (i in 0 until barCount) {
-            val envelope = 1f - kotlin.math.abs(i - 3) / 4.2f
-            val wave = 0.45f + 0.55f * ((sin(phase + i * 0.7f) + 1f) / 2f)
+            val envelope = 1f - abs(i - 3) / 4.2f
+            val wave = if (reduceMotion) 0.78f else 0.45f + 0.55f * ((sin(phase + i * 0.7f) + 1f) / 2f)
             val halfH = (maxHalf * envelope * wave).coerceAtLeast(3.dp.toPx())
             val x = startX + i * (barWidth + gap)
             drawRoundRect(
@@ -173,6 +217,7 @@ fun LiveWaveformVisualizer(
     isRecording: Boolean,
     modifier: Modifier = Modifier
 ) {
+    val reduceMotion = rememberReduceMotionEnabled()
     val activeColor = if (isRecording) {
         MaterialTheme.colorScheme.error
     } else {
@@ -180,12 +225,58 @@ fun LiveWaveformVisualizer(
     }
     val softActiveColor = activeColor.copy(alpha = 0.42f)
     val trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.26f)
-    val bars = if (amplitudes.isEmpty()) List(40) { 0.1f } else amplitudes
+    val targetBars = remember(amplitudes, isRecording) {
+        if (amplitudes.isEmpty()) {
+            List(40) { 0.1f }
+        } else {
+            amplitudes.map { it.coerceIn(0.06f, 1f) }
+        }
+    }
+
+    var renderedBars by remember { mutableStateOf(targetBars) }
+
+    LaunchedEffect(targetBars, reduceMotion) {
+        if (reduceMotion) {
+            renderedBars = targetBars
+            return@LaunchedEffect
+        }
+        // Smoothly interpolate toward targetBars over short frame steps so transitions/decays fluidly settle
+        val stepCount = if (isRecording) 3 else 6
+        val current = if (renderedBars.size == targetBars.size) {
+            renderedBars.toMutableList()
+        } else {
+            MutableList(targetBars.size) { idx ->
+                renderedBars.getOrElse(idx) { targetBars[idx] }
+            }
+        }
+        repeat(stepCount) {
+            var maxDelta = 0f
+            for (i in targetBars.indices) {
+                val next = current[i] * 0.45f + targetBars[i] * 0.55f
+                val delta = abs(targetBars[i] - next)
+                if (delta > maxDelta) maxDelta = delta
+                current[i] = next
+            }
+            renderedBars = current.toList()
+            if (maxDelta < 0.008f) {
+                renderedBars = targetBars
+                return@LaunchedEffect
+            }
+            delay(20L)
+        }
+        renderedBars = targetBars
+    }
+
+    val bars = renderedBars
+    val semanticLabel = if (isRecording) "Live voice waveform active" else "Audio waveform idle"
 
     Canvas(
         modifier = modifier
             .fillMaxWidth()
             .height(58.dp)
+            .semantics {
+                contentDescription = semanticLabel
+            }
     ) {
         val count = bars.size.coerceAtLeast(1)
         val gap = 3.5.dp.toPx()
@@ -229,6 +320,7 @@ fun EngineSelectorPillBar(
     modifier: Modifier = Modifier
 ) {
     val haptics = LocalStudioHaptics.current
+    val reduceMotion = rememberReduceMotionEnabled()
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -236,7 +328,9 @@ fun EngineSelectorPillBar(
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Row(
-            modifier = Modifier.padding(4.dp),
+            modifier = Modifier
+                .padding(4.dp)
+                .selectableGroup(),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -244,7 +338,7 @@ fun EngineSelectorPillBar(
                 val isSelected = mode == selectedMode
                 val containerColor by animateColorAsState(
                     targetValue = if (isSelected) MaterialTheme.colorScheme.surface else Color.Transparent,
-                    animationSpec = spring(stiffness = Spring.StiffnessMedium),
+                    animationSpec = if (reduceMotion) snap() else spring(stiffness = Spring.StiffnessMedium),
                     label = "engine_pill_bg"
                 )
                 val labelColor by animateColorAsState(
@@ -253,6 +347,7 @@ fun EngineSelectorPillBar(
                     } else {
                         MaterialTheme.colorScheme.onSurfaceVariant
                     },
+                    animationSpec = if (reduceMotion) snap() else tween(durationMillis = 150),
                     label = "engine_pill_fg"
                 )
 
@@ -281,6 +376,10 @@ fun EngineSelectorPillBar(
                         .weight(1f)
                         .minimumInteractiveComponentSize()
                         .clip(RoundedCornerShape(12.dp))
+                        .semantics {
+                            role = Role.Tab
+                            selected = isSelected
+                        }
                         .clickable {
                             if (!isSelected) haptics.tick()
                             onSelectMode(mode)
@@ -320,9 +419,10 @@ fun AnimatedLevelBar(
     isActive: Boolean,
     modifier: Modifier = Modifier
 ) {
+    val reduceMotion = rememberReduceMotionEnabled()
     val animated by animateFloatAsState(
         targetValue = if (isActive) level.coerceIn(0.06f, 1f) else 0.06f,
-        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        animationSpec = if (reduceMotion) snap() else spring(stiffness = Spring.StiffnessMediumLow),
         label = "level_meter"
     )
     val track = MaterialTheme.colorScheme.surfaceContainerHigh
@@ -333,6 +433,9 @@ fun AnimatedLevelBar(
             .fillMaxWidth()
             .height(6.dp)
             .clip(RoundedCornerShape(3.dp))
+            .semantics {
+                contentDescription = if (isActive) "Live audio input level" else "Audio input level idle"
+            }
     ) {
         drawRect(color = track)
         drawRect(

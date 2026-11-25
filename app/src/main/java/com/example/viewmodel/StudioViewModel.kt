@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.ai.LiveFinalizeResult
 import com.example.ai.LiveTranscriptionController
+import com.example.ai.ProviderRequestAuth
 import com.example.ai.TranscriptionRouter
 import com.example.audio.AudioInputHandler
 import com.example.core.AppContainer
@@ -183,11 +184,17 @@ class StudioViewModel(
     }
 
     fun saveCustomGeminiModel(modelName: String) {
-        keyStore.saveCustomGeminiModel(modelName)
-        _snackbarMessage.value = if (modelName.isBlank()) {
+        val clean = modelName.trim()
+        if (clean.isNotEmpty() && !ProviderRequestAuth.isValidGeminiModelName(clean)) {
+            _snackbarMessage.value = "Invalid model ID. Use letters, numbers, dots, hyphens, or underscores."
+            return
+        }
+        val normalized = if (clean.isEmpty()) "" else ProviderRequestAuth.sanitizeGeminiModelName(clean)
+        keyStore.saveCustomGeminiModel(normalized)
+        _snackbarMessage.value = if (normalized.isEmpty()) {
             "Gemini model reset to defaults"
         } else {
-            "Custom Gemini model saved: ${modelName.trim()}"
+            "Custom Gemini model saved: $normalized"
         }
     }
 
@@ -259,7 +266,8 @@ class StudioViewModel(
                 sourceType = AudioSourceType.STUDIO_RECORD
             )
             if (started.isFailure) {
-                val msg = started.exceptionOrNull()?.message ?: "Unable to start live stream."
+                val msg = ProviderRequestAuth.redactSecrets(started.exceptionOrNull()?.message)
+                    .ifBlank { "Unable to start live stream." }
                 _uiState.value = StudioUiState.Error(
                     message = msg,
                     canRetryWithAlternateEngine = prefs.routingMode == RoutingMode.OPENAI_ONLY,
@@ -534,7 +542,8 @@ class StudioViewModel(
                 }
             }.onFailure { err ->
                 haptics.error()
-                val errMsg = err.message ?: "Transcription failed."
+                val errMsg = ProviderRequestAuth.redactSecrets(err.message)
+                    .ifBlank { "Transcription failed." }
                 val openAiReady = router.isOpenAiReady
                 val alternate = when (effectiveMode) {
                     RoutingMode.OPENAI_ONLY -> RoutingMode.GEMINI_ONLY
@@ -551,8 +560,9 @@ class StudioViewModel(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "Unexpected error during transcription", e)
-            val errMsg = e.localizedMessage ?: "Unexpected transcription error."
+            val errMsg = ProviderRequestAuth.redactSecrets(e.localizedMessage)
+                .ifBlank { "Unexpected transcription error." }
+            Log.e(TAG, "Unexpected error during transcription: $errMsg")
             _uiState.value = StudioUiState.Error(
                 message = errMsg,
                 isAppCheckOrKeyError = isKeyOrAppCheckError(errMsg)

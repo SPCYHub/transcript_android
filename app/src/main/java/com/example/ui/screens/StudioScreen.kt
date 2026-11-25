@@ -1,5 +1,11 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -35,6 +41,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -51,6 +62,7 @@ import com.example.ui.components.LiveStreamingCanvasCard
 import com.example.ui.components.ProcessingStatusCard
 import com.example.ui.components.StudioThumbZoneDock
 import com.example.ui.components.TranscriptResultCard
+import com.example.ui.components.rememberReduceMotionEnabled
 
 @Composable
 fun StudioScreen(
@@ -237,7 +249,8 @@ private fun StudioHeader(
             Text(
                 text = "Voice Studio",
                 style = MaterialTheme.typography.headlineMedium,
-                color = MaterialTheme.colorScheme.onBackground
+                color = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.semantics { heading() }
             )
         }
 
@@ -256,6 +269,10 @@ private fun StudioHeader(
             modifier = Modifier
                 .minimumInteractiveComponentSize()
                 .clip(RoundedCornerShape(14.dp))
+                .semantics(mergeDescendants = true) {
+                    role = Role.Button
+                    contentDescription = "Manage API Keys, $statusLabel"
+                }
                 .clickable {
                     haptics.tick()
                     onOpenKeysTab()
@@ -281,7 +298,7 @@ private fun StudioHeader(
                 )
                 Icon(
                     imageVector = Icons.Filled.Key,
-                    contentDescription = "Manage API Keys",
+                    contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(13.dp)
                 )
@@ -303,51 +320,65 @@ private fun StudioStageContent(
     onOpenKeyboardTab: () -> Unit,
     onOpenKeysTab: () -> Unit
 ) {
-    when (uiState) {
-        is StudioUiState.Idle -> {
-            StudioIdleHeroStage(
-                onImportAudio = onImportAudio,
-                onOpenKeyboardTab = onOpenKeyboardTab,
-                onOpenKeysTab = onOpenKeysTab
-            )
-        }
+    val reduceMotion = rememberReduceMotionEnabled()
+    AnimatedContent(
+        targetState = uiState,
+        contentKey = { it::class },
+        transitionSpec = {
+            if (reduceMotion) {
+                fadeIn(snap()) togetherWith fadeOut(snap())
+            } else {
+                fadeIn(tween(180)) togetherWith fadeOut(tween(140))
+            }
+        },
+        label = "studio_stage_content"
+    ) { stageState ->
+        when (stageState) {
+            is StudioUiState.Idle -> {
+                StudioIdleHeroStage(
+                    onImportAudio = onImportAudio,
+                    onOpenKeyboardTab = onOpenKeyboardTab,
+                    onOpenKeysTab = onOpenKeysTab
+                )
+            }
 
-        is StudioUiState.LiveStreaming -> {
-            LiveStreamingCanvasCard(
-                state = uiState,
-                onCopyLiveNow = {
-                    val liveText = buildString {
-                        append(uiState.confirmedText)
-                        if (uiState.partialText.isNotBlank()) append(uiState.partialText)
-                    }.trim()
-                    if (liveText.isNotEmpty()) onCopyText(liveText)
-                },
-                onOpenKeys = onOpenKeysTab
-            )
-        }
+            is StudioUiState.LiveStreaming -> {
+                LiveStreamingCanvasCard(
+                    state = stageState,
+                    onCopyLiveNow = {
+                        val liveText = buildString {
+                            append(stageState.confirmedText)
+                            if (stageState.partialText.isNotBlank()) append(stageState.partialText)
+                        }.trim()
+                        if (liveText.isNotEmpty()) onCopyText(liveText)
+                    },
+                    onOpenKeys = onOpenKeysTab
+                )
+            }
 
-        is StudioUiState.Processing -> ProcessingStatusCard(state = uiState)
+            is StudioUiState.Processing -> ProcessingStatusCard(state = stageState)
 
-        is StudioUiState.Success -> {
-            TranscriptResultCard(
-                record = uiState.record,
-                displayFormat = displayFormat,
-                isConvertingWritten = uiState.isConvertingWritten,
-                isRunningDeepReview = uiState.isRunningDeepReview,
-                deepReviewError = uiState.deepReviewError,
-                onSelectFormat = onSelectFormat,
-                onCopyText = onCopyText,
-                onShareText = onShareText,
-                onRunDeepReview = onRunDeepReview
-            )
-        }
+            is StudioUiState.Success -> {
+                TranscriptResultCard(
+                    record = stageState.record,
+                    displayFormat = displayFormat,
+                    isConvertingWritten = stageState.isConvertingWritten,
+                    isRunningDeepReview = stageState.isRunningDeepReview,
+                    deepReviewError = stageState.deepReviewError,
+                    onSelectFormat = onSelectFormat,
+                    onCopyText = onCopyText,
+                    onShareText = onShareText,
+                    onRunDeepReview = onRunDeepReview
+                )
+            }
 
-        is StudioUiState.Error -> {
-            ErrorRecoveryCard(
-                state = uiState,
-                onRetry = onRetry,
-                onOpenKeys = onOpenKeysTab
-            )
+            is StudioUiState.Error -> {
+                ErrorRecoveryCard(
+                    state = stageState,
+                    onRetry = onRetry,
+                    onOpenKeys = onOpenKeysTab
+                )
+            }
         }
     }
 }
@@ -475,6 +506,10 @@ private fun QuickActionTile(
         modifier = modifier
             .minimumInteractiveComponentSize()
             .clip(RoundedCornerShape(18.dp))
+            .semantics(mergeDescendants = true) {
+                role = Role.Button
+                contentDescription = "$title, $subtitle"
+            }
             .clickable {
                 haptics.tick()
                 onClick()
@@ -493,7 +528,7 @@ private fun QuickActionTile(
             ) {
                 Icon(
                     imageVector = icon,
-                    contentDescription = title,
+                    contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(17.dp)
                 )

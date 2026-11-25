@@ -2,10 +2,17 @@ package com.example.ui.components
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -20,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
@@ -42,10 +50,16 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -69,6 +83,7 @@ fun TranscriptResultCard(
     modifier: Modifier = Modifier
 ) {
     val haptics = LocalStudioHaptics.current
+    val reduceMotion = rememberReduceMotionEnabled()
     val activeText = when (displayFormat) {
         CantoneseFormat.SPOKEN_CANTONESE -> record.deepReview?.refinedSpoken ?: record.spokenCantonese
         CantoneseFormat.WRITTEN_CHINESE -> record.deepReview?.refinedWritten
@@ -188,19 +203,34 @@ fun TranscriptResultCard(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(4.dp),
+                        .padding(4.dp)
+                        .selectableGroup(),
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     CantoneseFormat.entries.forEach { fmt ->
                         val selected = fmt == displayFormat
+                        val tabBg by animateColorAsState(
+                            targetValue = if (selected) MaterialTheme.colorScheme.surface else Color.Transparent,
+                            animationSpec = if (reduceMotion) snap() else tween(durationMillis = 160),
+                            label = "format_tab_bg"
+                        )
+                        val tabFg by animateColorAsState(
+                            targetValue = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            animationSpec = if (reduceMotion) snap() else tween(durationMillis = 160),
+                            label = "format_tab_fg"
+                        )
                         Surface(
                             shape = RoundedCornerShape(10.dp),
-                            color = if (selected) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surface.copy(alpha = 0f),
+                            color = tabBg,
                             shadowElevation = if (selected) 1.dp else 0.dp,
                             modifier = Modifier
                                 .weight(1f)
                                 .minimumInteractiveComponentSize()
                                 .clip(RoundedCornerShape(10.dp))
+                                .semantics {
+                                    role = Role.Tab
+                                    this.selected = selected
+                                }
                                 .clickable {
                                     if (!selected) haptics.tick()
                                     onSelectFormat(fmt)
@@ -211,11 +241,7 @@ fun TranscriptResultCard(
                                 Text(
                                     text = fmt.label,
                                     style = MaterialTheme.typography.labelLarge,
-                                    color = if (selected) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    },
+                                    color = tabFg,
                                     fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                                     modifier = Modifier.padding(vertical = 8.dp)
                                 )
@@ -234,6 +260,13 @@ fun TranscriptResultCard(
             ) {
                 AnimatedContent(
                     targetState = Triple(displayFormat, record.writtenChinese, record.deepReview),
+                    transitionSpec = {
+                        if (reduceMotion) {
+                            fadeIn(snap()) togetherWith fadeOut(snap())
+                        } else {
+                            fadeIn(tween(180)) togetherWith fadeOut(tween(140))
+                        }
+                    },
                     label = "transcript_format_content",
                     modifier = Modifier.padding(16.dp)
                 ) { (format, written, review) ->
@@ -376,7 +409,11 @@ fun TranscriptResultCard(
 
             AnimatedVisibility(
                 visible = record.deepReview != null,
-                enter = fadeIn() + expandVertically(spring(stiffness = Spring.StiffnessMediumLow))
+                enter = if (reduceMotion) {
+                    EnterTransition.None
+                } else {
+                    fadeIn() + expandVertically(spring(stiffness = Spring.StiffnessMediumLow))
+                }
             ) {
                 record.deepReview?.let { review ->
                     DeepReviewPanel(review = review, onCopyReply = onCopyText)

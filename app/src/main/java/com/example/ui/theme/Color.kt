@@ -13,7 +13,7 @@ val StudioLightOutlineVariant = Color(0xFFE2E8F0)
 val StudioLightInk = Color(0xFF0B1320)
 val StudioLightInkMuted = Color(0xFF4B5B70)
 
-val StudioJadePrimary = Color(0xFF0B8A7E)
+val StudioJadePrimary = Color(0xFF08786D)
 val StudioJadeOnPrimary = Color(0xFFFFFFFF)
 val StudioJadeContainer = Color(0xFFC8F7EE)
 val StudioJadeOnContainer = Color(0xFF032D2A)

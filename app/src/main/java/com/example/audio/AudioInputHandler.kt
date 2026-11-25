@@ -74,11 +74,21 @@ class AudioInputHandler(private val appContext: Context) {
      * Streams audio directly from a shared WhatsApp or SAF [Uri] in a single buffered pass,
      * sniffing magic bytes, extracting duration via FD, and computing SHA-256 on the fly.
      */
+    fun isSupportedAudioUriScheme(uri: Uri): Boolean {
+        val scheme = uri.scheme?.lowercase() ?: return false
+        return scheme == "content" || scheme == "android.resource"
+    }
+
     suspend fun prepareFromUri(
         uri: Uri,
         sourceType: AudioSourceType
     ): Result<PreparedAudio> = withContext(Dispatchers.IO) {
         try {
+            if (!isSupportedAudioUriScheme(uri)) {
+                return@withContext Result.failure(
+                    IllegalArgumentException("Unsupported audio URI scheme. Please share audio via Android content provider.")
+                )
+            }
             val resolvedName = queryDisplayName(uri) ?: "voice_${System.currentTimeMillis()}.ogg"
             val declaredMime = appContext.contentResolver.getType(uri)?.lowercase()
 
@@ -140,7 +150,7 @@ class AudioInputHandler(private val appContext: Context) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "Failed preparing audio from URI: $uri", e)
+            Log.e(TAG, "Failed preparing audio from shared URI: ${e.javaClass.simpleName}")
             Result.failure(e)
         }
     }

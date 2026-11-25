@@ -15,6 +15,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -63,6 +69,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.core.AppContainer
 import com.example.core.LocalStudioHaptics
 import com.example.model.AudioSourceType
+import com.example.ui.components.rememberReduceMotionEnabled
 import com.example.ui.components.studioGridBackground
 import com.example.ui.screens.KeyboardScreen
 import com.example.ui.screens.SessionScreen
@@ -361,6 +368,11 @@ private fun CantoScribeRoot(
                     ) {
                         AppDestination.entries.forEach { dest ->
                             val selected = currentDestination == dest
+                            val railLabel = if (dest == AppDestination.SESSION && sessionRecords.isNotEmpty()) {
+                                "${dest.label} (${sessionRecords.size})"
+                            } else {
+                                dest.label
+                            }
                             NavigationRailItem(
                                 selected = selected,
                                 onClick = {
@@ -370,19 +382,31 @@ private fun CantoScribeRoot(
                                 icon = {
                                     Icon(
                                         imageVector = if (selected) dest.selectedIcon else dest.unselectedIcon,
-                                        contentDescription = dest.label
+                                        contentDescription = railLabel
                                     )
                                 },
-                                label = { Text(dest.label) },
+                                label = { Text(railLabel) },
                                 modifier = Modifier.testTag("rail_${dest.route}")
                             )
                         }
                     }
                 }
 
+                val reduceMotion = rememberReduceMotionEnabled()
                 Box(modifier = Modifier.weight(1f)) {
-                    when (currentDestination) {
-                        AppDestination.STUDIO -> StudioScreen(
+                    AnimatedContent(
+                        targetState = currentDestination,
+                        transitionSpec = {
+                            if (reduceMotion) {
+                                fadeIn(snap()) togetherWith fadeOut(snap())
+                            } else {
+                                fadeIn(tween(180)) togetherWith fadeOut(tween(140))
+                            }
+                        },
+                        label = "main_tab_content"
+                    ) { destination ->
+                        when (destination) {
+                            AppDestination.STUDIO -> StudioScreen(
                             uiState = uiState,
                             preferences = preferences,
                             displayFormat = displayFormat,
@@ -460,6 +484,7 @@ private fun CantoScribeRoot(
                             onToggleIncludeWritten = viewModel::setIncludeWrittenInAuto,
                             onSaveGlossary = viewModel::setCustomGlossary
                         )
+                        }
                     }
                 }
             }

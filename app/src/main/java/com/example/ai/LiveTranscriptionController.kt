@@ -442,12 +442,12 @@ class LiveTranscriptionController(
                     val existingConfirmed = _state.value.combinedText
 
                     if (preferences.routingMode == RoutingMode.AUTO && keyStore.hasDirectGeminiKey()) {
-                        Log.w(TAG, "OpenAI Realtime error ($message); failing over live to Gemini Direct Live")
+                        Log.w(TAG, "OpenAI Realtime error (${ProviderRequestAuth.redactSecrets(message)}); failing over live to Gemini Direct Live")
                         openAiRealtime.disconnect()
                         pcmRecorder.stop()
                         startGeminiLiveApiSession(scope, preferences, carryOverText = existingConfirmed)
                     } else if (!isAuthError(message)) {
-                        Log.w(TAG, "OpenAI Realtime unavailable ($message); switching live to OpenAI Chunked REST")
+                        Log.w(TAG, "OpenAI Realtime unavailable (${ProviderRequestAuth.redactSecrets(message)}); switching live to OpenAI Chunked REST")
                         openAiRealtime.disconnect()
                         pcmRecorder.stop()
                         startOpenAiChunkedRestSession(
@@ -456,7 +456,7 @@ class LiveTranscriptionController(
                             carryOverText = existingConfirmed
                         )
                     } else {
-                        _state.update { it.copy(isConnecting = false, isTranscribingChunk = false, errorMessage = message) }
+                        _state.update { it.copy(isConnecting = false, isTranscribingChunk = false, errorMessage = ProviderRequestAuth.redactSecrets(message)) }
                     }
                 }
 
@@ -578,11 +578,12 @@ class LiveTranscriptionController(
                 }
             }
         }.onFailure { err ->
-            Log.e(TAG, "OpenAI live REST chunk failed", err)
+            val safeMsg = ProviderRequestAuth.redactSecrets(err.localizedMessage ?: "OpenAI chunk error")
+            Log.e(TAG, "OpenAI live REST chunk failed: $safeMsg")
             _state.update {
                 it.copy(
                     isTranscribingChunk = false,
-                    errorMessage = err.localizedMessage ?: "OpenAI chunk error"
+                    errorMessage = safeMsg
                 )
             }
         }
@@ -734,13 +735,13 @@ class LiveTranscriptionController(
                     if (!_state.value.isActive || isFinalizing || pipelineMode != LivePipelineMode.GEMINI_LIVE_API) return
 
                     if (isAuthError(message)) {
-                        _state.update { it.copy(isConnecting = false, isTranscribingChunk = false, errorMessage = message) }
+                        _state.update { it.copy(isConnecting = false, isTranscribingChunk = false, errorMessage = ProviderRequestAuth.redactSecrets(message)) }
                         return
                     }
 
                     val existingText = _state.value.combinedText
                     val bufferedPcm = drainFallbackPcm()
-                    Log.w(TAG, "Gemini Live API error ($message); failing over seamlessly to Gemini VAD chunked streaming")
+                    Log.w(TAG, "Gemini Live API error (${ProviderRequestAuth.redactSecrets(message)}); failing over seamlessly to Gemini VAD chunked streaming")
                     geminiLive.disconnect()
                     pcmRecorder.stop()
                     startGeminiVadChunkSession(
@@ -969,7 +970,7 @@ class LiveTranscriptionController(
                         val msg = err.message.orEmpty()
                         val isModelErr = msg.contains("(404)") || msg.contains("not found", ignoreCase = true)
                         if (!isModelErr) throw err
-                        Log.w(TAG, "Direct Gemini stream ($modelName) unavailable ($msg); trying next model")
+                        Log.w(TAG, "Direct Gemini stream ($modelName) unavailable (${ProviderRequestAuth.redactSecrets(msg)}); trying next model")
                     }
                 }
 
@@ -994,17 +995,18 @@ class LiveTranscriptionController(
                 }
             }
         } catch (e: TimeoutCancellationException) {
-            Log.e(TAG, "Gemini live chunk timed out", e)
+            Log.e(TAG, "Gemini live chunk timed out")
             _state.update { it.copy(isTranscribingChunk = false, partialText = "", errorMessage = "Live chunk timed out") }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "Gemini live chunk failed", e)
+            val safeMsg = ProviderRequestAuth.redactSecrets(e.localizedMessage ?: "Gemini live chunk error")
+            Log.e(TAG, "Gemini live chunk failed: $safeMsg")
             _state.update {
                 it.copy(
                     isTranscribingChunk = false,
                     partialText = "",
-                    errorMessage = e.localizedMessage ?: "Gemini live chunk error"
+                    errorMessage = safeMsg
                 )
             }
         }

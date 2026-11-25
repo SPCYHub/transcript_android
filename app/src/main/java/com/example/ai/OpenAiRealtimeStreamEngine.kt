@@ -155,14 +155,16 @@ class OpenAiRealtimeStreamEngine(
                     isSessionReady = false
                     val bodyDetail = runCatching { response?.body?.string() }.getOrNull()
                     val parsedBody = extractErrorFromRaw(bodyDetail)
-                    val detail = parsedBody
-                        ?: response?.message?.takeIf { it.isNotBlank() }
-                        ?: t.localizedMessage
-                        ?: "Realtime connection failed"
+                    val detail = ProviderRequestAuth.redactSecrets(
+                        parsedBody
+                            ?: response?.message?.takeIf { it.isNotBlank() }
+                            ?: t.localizedMessage
+                            ?: "Realtime connection failed"
+                    ).ifBlank { "Realtime connection failed" }
                     val codePrefix = response?.code?.let { "($it) " } ?: ""
                     val fullMsg = "OpenAI Realtime $codePrefix$detail".trim()
                     lastErrorMessage = fullMsg
-                    Log.e(TAG, "OpenAI Realtime WebSocket failure: $fullMsg", t)
+                    Log.e(TAG, "OpenAI Realtime WebSocket failure: $fullMsg")
                     pendingCompletion?.complete(false)
                     listener.onError(fullMsg)
                 }

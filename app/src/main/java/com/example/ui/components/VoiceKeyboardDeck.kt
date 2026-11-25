@@ -2,6 +2,8 @@ package com.example.ui.components
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -9,12 +11,14 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -26,6 +30,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -60,6 +65,12 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -98,6 +109,7 @@ fun VoiceKeyboardDeck(
     modifier: Modifier = Modifier
 ) {
     val haptics = LocalStudioHaptics.current
+    val reduceMotion = rememberReduceMotionEnabled()
     val scope = rememberCoroutineScope()
     var showQuickPhrases by remember { mutableStateOf(false) }
     var isVoicePadPressed by remember { mutableStateOf(false) }
@@ -109,20 +121,25 @@ fun VoiceKeyboardDeck(
     val latestOnStop by rememberUpdatedState(onStopSandboxLive)
     val latestOnBackspace by rememberUpdatedState(onBackspace)
 
-    val pulseTransition = rememberInfiniteTransition(label = "ime_live_dot")
-    val liveDotAlpha by pulseTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = 0.25f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 520),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "ime_dot_alpha"
-    )
+    val liveDotAlpha = if (isStreaming && !reduceMotion) {
+        val pulseTransition = rememberInfiniteTransition(label = "ime_live_dot")
+        val animatedAlpha by pulseTransition.animateFloat(
+            initialValue = 1f,
+            targetValue = 0.25f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 520),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "ime_dot_alpha"
+        )
+        animatedAlpha
+    } else {
+        1f
+    }
 
     val padScale by animateFloatAsState(
-        targetValue = if (isVoicePadPressed) 0.97f else 1f,
-        animationSpec = spring(stiffness = Spring.StiffnessMedium),
+        targetValue = if (isVoicePadPressed && !reduceMotion) 0.97f else 1f,
+        animationSpec = if (reduceMotion) snap() else spring(stiffness = Spring.StiffnessMedium),
         label = "keyboard_pad_scale"
     )
 
@@ -132,6 +149,7 @@ fun VoiceKeyboardDeck(
         } else {
             MaterialTheme.colorScheme.outlineVariant
         },
+        animationSpec = if (reduceMotion) snap() else tween(durationMillis = 180),
         label = "keyboard_deck_border"
     )
 
@@ -194,6 +212,7 @@ fun VoiceKeyboardDeck(
                     KeyboardControlChip(
                         label = preferences.routingMode.label,
                         highlighted = false,
+                        semanticLabel = "Engine: ${preferences.routingMode.label}. Tap to switch",
                         onClick = {
                             haptics.tick()
                             onCycleRoutingMode()
@@ -203,6 +222,11 @@ fun VoiceKeyboardDeck(
                     KeyboardControlChip(
                         label = if (preferences.defaultFormat == CantoneseFormat.WRITTEN_CHINESE) "書面語" else "口語",
                         highlighted = false,
+                        semanticLabel = if (preferences.defaultFormat == CantoneseFormat.WRITTEN_CHINESE) {
+                            "Format: Standard Written Chinese. Tap to switch"
+                        } else {
+                            "Format: Spoken Cantonese. Tap to switch"
+                        },
                         onClick = {
                             haptics.tick()
                             onToggleFormat()
@@ -212,6 +236,8 @@ fun VoiceKeyboardDeck(
                     KeyboardControlChip(
                         label = "詞",
                         highlighted = showQuickPhrases,
+                        semanticLabel = "Quick Cantonese phrases strip",
+                        semanticState = if (showQuickPhrases) "Shown" else "Hidden",
                         onClick = {
                             haptics.tick()
                             showQuickPhrases = !showQuickPhrases
@@ -224,6 +250,13 @@ fun VoiceKeyboardDeck(
             // Row 2: Sculpted Quick Keycap Row (Punctuation/Particles <-> HK Quick Phrases)
             AnimatedContent(
                 targetState = showQuickPhrases,
+                transitionSpec = {
+                    if (reduceMotion) {
+                        fadeIn(snap()) togetherWith fadeOut(snap())
+                    } else {
+                        fadeIn(tween(150)) togetherWith fadeOut(tween(120))
+                    }
+                },
                 label = "keyboard_quick_strip_mode"
             ) { phrasesMode ->
                 Row(
@@ -346,6 +379,13 @@ fun VoiceKeyboardDeck(
                         MaterialTheme.colorScheme.onPrimary
                     }
 
+                    val micSemanticLabel = if (isStreaming) {
+                        "Stop live Cantonese dictation"
+                    } else {
+                        "Start hands-free live Cantonese dictation, or hold to speak"
+                    }
+                    val micSemanticState = if (isStreaming) "Recording" else "Idle"
+
                     Box(
                         modifier = Modifier
                             .weight(1f)
@@ -353,6 +393,21 @@ fun VoiceKeyboardDeck(
                             .scale(padScale)
                             .clip(RoundedCornerShape(18.dp))
                             .background(padBrush)
+                            .semantics(mergeDescendants = true) {
+                                role = Role.Button
+                                contentDescription = micSemanticLabel
+                                stateDescription = micSemanticState
+                                onClick(label = micSemanticLabel) {
+                                    if (latestIsStreaming) {
+                                        haptics.recordStop()
+                                        latestOnStop()
+                                    } else {
+                                        haptics.recordStart()
+                                        latestOnStart(false)
+                                    }
+                                    true
+                                }
+                            }
                             .pointerInput(Unit) {
                                 detectTapGestures(
                                     onPress = {
@@ -403,7 +458,7 @@ fun VoiceKeyboardDeck(
                                         isStreaming -> Icons.Filled.GraphicEq
                                         else -> Icons.Filled.Mic
                                     },
-                                    contentDescription = "Live Cantonese voice pad",
+                                    contentDescription = null,
                                     tint = padFg,
                                     modifier = Modifier.size(21.dp)
                                 )
@@ -427,7 +482,7 @@ fun VoiceKeyboardDeck(
                                         "Zero-wait 粵語 voice keyboard deck"
                                     },
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = padFg.copy(alpha = 0.85f),
+                                    color = padFg,
                                     maxLines = 1
                                 )
                             }
@@ -436,8 +491,8 @@ fun VoiceKeyboardDeck(
 
                     AnimatedVisibility(
                         visible = isStreaming,
-                        enter = fadeIn() + expandHorizontally(),
-                        exit = fadeOut() + shrinkHorizontally()
+                        enter = if (reduceMotion) EnterTransition.None else fadeIn() + expandHorizontally(),
+                        exit = if (reduceMotion) ExitTransition.None else fadeOut() + shrinkHorizontally()
                     ) {
                         Surface(
                             shape = RoundedCornerShape(18.dp),
@@ -476,7 +531,8 @@ fun VoiceKeyboardDeck(
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                     modifier = Modifier
                         .weight(1f)
-                        .height(46.dp)
+                        .heightIn(min = 48.dp)
+                        .height(48.dp)
                         .clip(RoundedCornerShape(12.dp))
                         .clickable {
                             haptics.keyTap()
@@ -500,7 +556,8 @@ fun VoiceKeyboardDeck(
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                     modifier = Modifier
                         .weight(2.4f)
-                        .height(46.dp)
+                        .heightIn(min = 48.dp)
+                        .height(48.dp)
                         .clip(RoundedCornerShape(12.dp))
                         .clickable {
                             haptics.keyTap()
@@ -520,8 +577,8 @@ fun VoiceKeyboardDeck(
                 // Hold-to-repeat Backspace Keycap
                 var backspacePressed by remember { mutableStateOf(false) }
                 val backspaceScale by animateFloatAsState(
-                    targetValue = if (backspacePressed) 0.94f else 1f,
-                    animationSpec = spring(stiffness = Spring.StiffnessHigh),
+                    targetValue = if (backspacePressed && !reduceMotion) 0.94f else 1f,
+                    animationSpec = if (reduceMotion) snap() else spring(stiffness = Spring.StiffnessHigh),
                     label = "backspace_scale"
                 )
                 Surface(
@@ -534,9 +591,19 @@ fun VoiceKeyboardDeck(
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                     modifier = Modifier
                         .weight(1.1f)
-                        .height(46.dp)
+                        .heightIn(min = 48.dp)
+                        .height(48.dp)
                         .scale(backspaceScale)
                         .clip(RoundedCornerShape(12.dp))
+                        .semantics(mergeDescendants = true) {
+                            role = Role.Button
+                            contentDescription = "Backspace, hold to repeat"
+                            onClick(label = "Delete character") {
+                                haptics.keyTap()
+                                latestOnBackspace()
+                                true
+                            }
+                        }
                         .pointerInput(Unit) {
                             detectTapGestures(
                                 onPress = {
@@ -565,7 +632,7 @@ fun VoiceKeyboardDeck(
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.Backspace,
-                            contentDescription = "Backspace (hold to repeat)",
+                            contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.size(19.dp)
                         )
@@ -578,7 +645,8 @@ fun VoiceKeyboardDeck(
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
                     modifier = Modifier
                         .weight(1.25f)
-                        .height(46.dp)
+                        .heightIn(min = 48.dp)
+                        .height(48.dp)
                         .clip(RoundedCornerShape(12.dp))
                         .clickable {
                             haptics.keyTap()
@@ -604,8 +672,10 @@ fun VoiceKeyboardDeck(
 private fun KeyboardControlChip(
     label: String,
     highlighted: Boolean,
+    semanticLabel: String,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    semanticState: String? = null
 ) {
     Surface(
         shape = RoundedCornerShape(10.dp),
@@ -622,6 +692,13 @@ private fun KeyboardControlChip(
         modifier = modifier
             .minimumInteractiveComponentSize()
             .clip(RoundedCornerShape(10.dp))
+            .semantics(mergeDescendants = true) {
+                role = Role.Button
+                contentDescription = semanticLabel
+                if (semanticState != null) {
+                    stateDescription = semanticState
+                }
+            }
             .clickable(onClick = onClick)
     ) {
         Text(
@@ -660,7 +737,7 @@ private fun KeyboardKeycap(
             else MaterialTheme.colorScheme.outlineVariant
         ),
         modifier = modifier
-            .height(40.dp)
+            .heightIn(min = 48.dp)
             .clip(RoundedCornerShape(10.dp))
             .clickable(enabled = enabled, onClick = onClick)
     ) {

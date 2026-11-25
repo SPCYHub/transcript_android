@@ -191,8 +191,10 @@ class OpenAiTranscriptionEngine(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "OpenAI transcription request failed", e)
-            Result.failure(e)
+            val safeMsg = ProviderRequestAuth.redactSecrets(e.localizedMessage)
+                .ifBlank { "OpenAI transcription request failed." }
+            Log.e(TAG, "OpenAI transcription request failed: $safeMsg")
+            Result.failure(IllegalStateException(safeMsg))
         }
     }
 
@@ -468,7 +470,7 @@ class OpenAiTranscriptionEngine(
             try {
                 val root = JSONObject(rawErrorBody)
                 val errObj = root.optJSONObject("error")
-                val msg = errObj?.optString("message").orEmpty()
+                val msg = ProviderRequestAuth.redactSecrets(errObj?.optString("message").orEmpty())
                 if (msg.isNotBlank()) return "OpenAI ($httpCode): $msg"
             } catch (_: Exception) {
             }

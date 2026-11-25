@@ -1,6 +1,7 @@
 package com.example.ime
 
 import android.Manifest
+import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -8,6 +9,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.inputmethodservice.InputMethodService
 import android.os.Build
+import android.text.InputType
 import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
@@ -16,16 +18,20 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
+import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.content.ContextCompat
+import androidx.core.view.AccessibilityDelegateCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import com.example.MainActivity
 import com.example.R
 import com.example.ai.LiveFinalizeResult
+import com.example.ai.ProviderRequestAuth
 import com.example.core.AppContainer
 import com.example.model.AudioSourceType
 import com.example.model.CantoneseFormat
@@ -66,6 +72,8 @@ class CantoVoiceImeService : InputMethodService() {
     private var lastCommittedLength = 0
     private var activeComposingText = ""
     private var currentActionLabel = "Send ↵"
+    private var isPasswordField = false
+    private var isIncognitoField = false
 
     private var palette: ImePalette = ImePalette.Dark
 
@@ -146,6 +154,7 @@ class CantoVoiceImeService : InputMethodService() {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.START
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
             setPadding(dp(12), dp(6), dp(12), dp(6))
             background = sculptedKeyDrawable(
                 fillColor = palette.previewBg,
@@ -204,8 +213,35 @@ class CantoVoiceImeService : InputMethodService() {
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         palette = ImePalette.resolve(this, themePreference)
+        isPasswordField = isPasswordInputType(info?.inputType ?: 0)
+        isIncognitoField = isIncognitoEditor(info)
+        if (!restarting || isPasswordField) {
+            lastCommittedLength = 0
+        }
+        if (isPasswordField && isLiveStreaming) {
+            stopAndDiscardSafely()
+        }
         currentActionLabel = resolveEditorActionLabel(info)
         primaryActionKey?.text = currentActionLabel
+        if (!isLiveStreaming) {
+            when {
+                isPasswordField -> {
+                    statusTextView?.text = "PASSWORD FIELD · VOICE LOCKED"
+                    previewBanner?.text = "Voice dictation disabled on password fields for privacy"
+                    previewBanner?.setTextColor(palette.crimsonAccent)
+                }
+                isIncognitoField -> {
+                    statusTextView?.text = "CANTOSCRIBE · INCOGNITO"
+                    previewBanner?.text = "Private field · Dictation won't save to history"
+                    previewBanner?.setTextColor(palette.textSecondary)
+                }
+                else -> {
+                    statusTextView?.text = "CANTOSCRIBE · 粵語"
+                    previewBanner?.text = "講廣東話 · Live Cantonese streams directly into your text box"
+                    previewBanner?.setTextColor(palette.textSecondary)
+                }
+            }
+        }
         refreshControlChips()
         updateVoicePadUi()
     }
@@ -237,6 +273,7 @@ class CantoVoiceImeService : InputMethodService() {
         }
 
         val dot = View(this).apply {
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             background = circleDrawable(palette.jadeAccent)
             layoutParams = LinearLayout.LayoutParams(dp(8), dp(8)).apply {
                 marginEnd = dp(7)
@@ -252,6 +289,7 @@ class CantoVoiceImeService : InputMethodService() {
             typeface = Typeface.MONOSPACE
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
         statusTextView = statusTv
@@ -368,6 +406,8 @@ class CantoVoiceImeService : InputMethodService() {
         val pad = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
+            isClickable = true
+            isFocusable = true
             setPadding(dp(14), dp(8), dp(14), dp(8))
             background = gradientPadDrawable(
                 startColor = palette.jadeStart,
@@ -378,15 +418,18 @@ class CantoVoiceImeService : InputMethodService() {
             )
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
             contentDescription = "Hold to speak or tap for hands-free Cantonese voice typing"
+            markAsButtonRole(this)
         }
 
         val badge = FrameLayout(this).apply {
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
             background = circleDrawable(Color.argb(46, 255, 255, 255))
             layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)).apply {
                 marginEnd = dp(12)
             }
         }
         val icon = ImageView(this).apply {
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             setImageResource(R.drawable.ic_ime_mic)
             setColorFilter(palette.jadeOnPrimary)
             scaleType = ImageView.ScaleType.CENTER_INSIDE
@@ -400,6 +443,7 @@ class CantoVoiceImeService : InputMethodService() {
         val textCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_VERTICAL
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
         }
         val titleTv = TextView(this).apply {
             text = "Hold to Speak · Tap Hands-Free"
@@ -410,7 +454,7 @@ class CantoVoiceImeService : InputMethodService() {
         }
         val subtitleTv = TextView(this).apply {
             text = "Live 粵語 · Zero-wait real-time streaming"
-            setTextColor(Color.argb(215, 255, 255, 255))
+            setTextColor(palette.jadeOnPrimary)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             maxLines = 1
         }
@@ -420,10 +464,22 @@ class CantoVoiceImeService : InputMethodService() {
         textCol.addView(subtitleTv)
         pad.addView(textCol)
 
+        // Enables TalkBack / keyboard double-tap activation via AccessibilityNodeInfo ACTION_CLICK
+        pad.setOnClickListener { v ->
+            if (!isLiveStreaming) {
+                isHoldGestureLocked = true
+                AppContainer.studioHaptics.recordStart(v)
+                startLiveDictation()
+            } else {
+                AppContainer.studioHaptics.recordStop(v)
+                stopLiveDictation()
+            }
+        }
+
         pad.setOnTouchListener { v, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    v.animate().scaleX(0.97f).scaleY(0.97f).setDuration(85L).start()
+                    animateScale(v, target = 0.97f, durationMs = 85L)
                     pressDownTimestampMs = System.currentTimeMillis()
                     if (!isLiveStreaming) {
                         isHoldGestureLocked = false
@@ -436,7 +492,7 @@ class CantoVoiceImeService : InputMethodService() {
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    v.animate().scaleX(1f).scaleY(1f).setDuration(110L).start()
+                    animateScale(v, target = 1f, durationMs = 110L)
                     val heldMs = System.currentTimeMillis() - pressDownTimestampMs
                     if (isLiveStreaming && !isHoldGestureLocked) {
                         if (heldMs < 320L) {
@@ -458,6 +514,7 @@ class CantoVoiceImeService : InputMethodService() {
 
         val cancelBtn = FrameLayout(this).apply {
             visibility = View.GONE
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
             background = sculptedKeyDrawable(
                 fillColor = palette.keyBg,
                 strokeColor = palette.keyStroke,
@@ -466,11 +523,13 @@ class CantoVoiceImeService : InputMethodService() {
                 strokeWidthPx = dp(1)
             )
             contentDescription = "Cancel live dictation"
+            markAsButtonRole(this)
             layoutParams = LinearLayout.LayoutParams(dp(56), LinearLayout.LayoutParams.MATCH_PARENT).apply {
                 marginStart = dp(8)
             }
             addView(
                 ImageView(context).apply {
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
                     setImageResource(R.drawable.ic_ime_close)
                     setColorFilter(palette.textSecondary)
                     layoutParams = FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER)
@@ -480,7 +539,7 @@ class CantoVoiceImeService : InputMethodService() {
                 AppContainer.studioHaptics.error(v)
                 stopAndDiscardSafely()
                 updateVoicePadUi()
-                statusTextView?.text = "CANTOSCRIBE · 粵語"
+                statusTextView?.text = if (isIncognitoField) "CANTOSCRIBE · INCOGNITO" else "CANTOSCRIBE · 粵語"
                 previewBanner?.text = "Dictation cancelled"
             }
         }
@@ -497,7 +556,7 @@ class CantoVoiceImeService : InputMethodService() {
             gravity = Gravity.CENTER_VERTICAL
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(46)
+                dp(48)
             )
         }
 
@@ -510,12 +569,14 @@ class CantoVoiceImeService : InputMethodService() {
                 radiusPx = dp(12).toFloat(),
                 strokeWidthPx = dp(1)
             )
-            contentDescription = "Switch keyboard"
+            contentDescription = "Switch keyboard. Long press for input method picker"
+            markAsButtonRole(this)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.05f).apply {
                 marginEnd = dp(6)
             }
             addView(
                 ImageView(context).apply {
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
                     setImageResource(R.drawable.ic_ime_globe)
                     setColorFilter(palette.textPrimary)
                     layoutParams = FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER)
@@ -536,10 +597,12 @@ class CantoVoiceImeService : InputMethodService() {
         // Wide sculpted Space bar
         val spaceKey = TextView(this).apply {
             text = "空格 · Space"
+            contentDescription = "Space"
             setTextColor(palette.textSecondary)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             gravity = Gravity.CENTER
+            markAsButtonRole(this)
             background = sculptedKeyDrawable(
                 fillColor = palette.keyBg,
                 strokeColor = palette.keyStroke,
@@ -557,8 +620,10 @@ class CantoVoiceImeService : InputMethodService() {
         }
         bottomRow.addView(spaceKey)
 
-        // Hold-to-repeat Backspace key
+        // Hold-to-repeat Backspace key + single-tap Accessibility click support
         val backspaceBtn = FrameLayout(this).apply {
+            isClickable = true
+            isFocusable = true
             background = sculptedKeyDrawable(
                 fillColor = palette.surface,
                 strokeColor = palette.keyStroke,
@@ -567,21 +632,27 @@ class CantoVoiceImeService : InputMethodService() {
                 strokeWidthPx = dp(1)
             )
             contentDescription = "Backspace"
+            markAsButtonRole(this)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.1f).apply {
                 marginEnd = dp(6)
             }
             addView(
                 ImageView(context).apply {
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
                     setImageResource(R.drawable.ic_ime_backspace)
                     setColorFilter(palette.textPrimary)
                     layoutParams = FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER)
                 }
             )
+            setOnClickListener { v ->
+                AppContainer.studioHaptics.keyTap(v)
+                deleteSingleChar()
+            }
             setOnTouchListener { v, event ->
                 when (event.action) {
                     MotionEvent.ACTION_DOWN -> {
                         v.isPressed = true
-                        v.animate().scaleX(0.94f).scaleY(0.94f).setDuration(70L).start()
+                        animateScale(v, target = 0.94f, durationMs = 70L)
                         AppContainer.studioHaptics.keyTap(v)
                         deleteSingleChar()
                         startBackspaceRepeat(v)
@@ -589,7 +660,7 @@ class CantoVoiceImeService : InputMethodService() {
                     }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                         v.isPressed = false
-                        v.animate().scaleX(1f).scaleY(1f).setDuration(90L).start()
+                        animateScale(v, target = 1f, durationMs = 90L)
                         stopBackspaceRepeat()
                         true
                     }
@@ -606,6 +677,7 @@ class CantoVoiceImeService : InputMethodService() {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             gravity = Gravity.CENTER
+            markAsButtonRole(this)
             background = sculptedKeyDrawable(
                 fillColor = palette.jadeStart,
                 strokeColor = palette.jadeAccent,
@@ -627,6 +699,14 @@ class CantoVoiceImeService : InputMethodService() {
     }
 
     private fun startLiveDictation() {
+        if (isPasswordField) {
+            AppContainer.studioHaptics.error()
+            statusTextView?.text = "PASSWORD FIELD · VOICE LOCKED"
+            previewBanner?.text = "Voice dictation disabled on password fields for privacy"
+            previewBanner?.setTextColor(palette.crimsonAccent)
+            return
+        }
+
         if (!hasMicPermission()) {
             AppContainer.studioHaptics.error()
             statusTextView?.text = "MIC ACCESS NEEDED"
@@ -650,6 +730,7 @@ class CantoVoiceImeService : InputMethodService() {
                 preferences = prefs,
                 sourceType = AudioSourceType.KEYBOARD_LIVE,
                 onPartial = { partial ->
+                    if (isPasswordField) return@startLiveStream
                     if (partial.isBlank()) {
                         if (activeComposingText.isNotEmpty()) {
                             currentInputConnection?.setComposingText("", 1)
@@ -658,22 +739,32 @@ class CantoVoiceImeService : InputMethodService() {
                     } else {
                         activeComposingText = partial
                         currentInputConnection?.setComposingText(partial, 1)
-                        previewBanner?.text = "Streaming: $partial ▍"
+                        previewBanner?.text = if (isIncognitoField) {
+                            "Incognito streaming…"
+                        } else {
+                            "Streaming: $partial ▍"
+                        }
                         previewBanner?.setTextColor(palette.jadeAccent)
                     }
                 },
                 onCommitSegment = { segment ->
+                    if (isPasswordField) return@startLiveStream
                     activeComposingText = ""
                     commitToHost(segment, trackAsDictation = true)
                     AppContainer.studioHaptics.phraseCommit()
-                    previewBanner?.text = "Committed: $segment"
+                    previewBanner?.text = if (isIncognitoField) {
+                        "Committed phrase (incognito)"
+                    } else {
+                        "Committed: $segment"
+                    }
                     previewBanner?.setTextColor(palette.textPrimary)
                 }
             )
 
             if (started.isFailure) {
                 AppContainer.studioHaptics.error()
-                val err = started.exceptionOrNull()?.message?.take(64) ?: "Unable to start live mic"
+                val rawErr = started.exceptionOrNull()?.message ?: "Unable to start live mic"
+                val err = ProviderRequestAuth.redactSecrets(rawErr).take(72)
                 statusTextView?.text = "MIC ERROR"
                 previewBanner?.text = err
                 previewBanner?.setTextColor(palette.crimsonAccent)
@@ -698,7 +789,7 @@ class CantoVoiceImeService : InputMethodService() {
                         )
                     }
                     if (!state.errorMessage.isNullOrBlank()) {
-                        previewBanner?.text = state.errorMessage.take(72)
+                        previewBanner?.text = ProviderRequestAuth.redactSecrets(state.errorMessage).take(72)
                         previewBanner?.setTextColor(palette.crimsonAccent)
                     } else if (state.partialText.isBlank() && state.confirmedText.isBlank()) {
                         previewBanner?.text = if (state.isConnecting) {
@@ -726,7 +817,9 @@ class CantoVoiceImeService : InputMethodService() {
             // the same phrase a second time. Leaving the composing span active allows `commitText`
             // inside `onCommitSegment` to replace it cleanly with zero duplication.
             statusTextView?.text = "FINALIZING…"
-            val result = AppContainer.liveTranscriptionController.stopAndFinalize(saveToSession = true)
+            val result = AppContainer.liveTranscriptionController.stopAndFinalize(
+                saveToSession = !isIncognitoField
+            )
             if (activeComposingText.isNotEmpty()) {
                 // Only finalize composing text if no final `.completed` segment replaced it.
                 currentInputConnection?.finishComposingText()
@@ -738,18 +831,23 @@ class CantoVoiceImeService : InputMethodService() {
             when (result) {
                 is LiveFinalizeResult.Success -> {
                     AppContainer.studioHaptics.confirm()
-                    statusTextView?.text = "DONE · ${result.record.engineUsed.displayName.uppercase(Locale.US)}"
-                    previewBanner?.text = result.record.spokenCantonese
+                    if (isIncognitoField) {
+                        statusTextView?.text = "DONE · INCOGNITO"
+                        previewBanner?.text = "Dictation committed (not saved to history)"
+                    } else {
+                        statusTextView?.text = "DONE · ${result.record.engineUsed.displayName.uppercase(Locale.US)}"
+                        previewBanner?.text = result.record.spokenCantonese
+                    }
                     previewBanner?.setTextColor(palette.textPrimary)
                 }
                 is LiveFinalizeResult.Error -> {
                     AppContainer.studioHaptics.error()
                     statusTextView?.text = "TRANSCRIPTION ISSUE"
-                    previewBanner?.text = result.message.take(72)
+                    previewBanner?.text = ProviderRequestAuth.redactSecrets(result.message).take(72)
                     previewBanner?.setTextColor(palette.crimsonAccent)
                 }
                 LiveFinalizeResult.Empty -> {
-                    statusTextView?.text = "CANTOSCRIBE · 粵語"
+                    statusTextView?.text = if (isIncognitoField) "CANTOSCRIBE · INCOGNITO" else "CANTOSCRIBE · 粵語"
                     previewBanner?.text = "No speech detected — hold to speak or tap hands-free"
                     previewBanner?.setTextColor(palette.textSecondary)
                 }
@@ -854,12 +952,24 @@ class CantoVoiceImeService : InputMethodService() {
     }
 
     private fun refreshControlChips() {
-        engineChip?.text = when (routingMode) {
+        val engineLabel = when (routingMode) {
             RoutingMode.AUTO -> "Auto"
             RoutingMode.GEMINI_ONLY -> "Gemini"
             RoutingMode.OPENAI_ONLY -> "OpenAI"
         }
-        formatChip?.text = if (formatMode == CantoneseFormat.WRITTEN_CHINESE) "書面語" else "口語"
+        engineChip?.apply {
+            text = engineLabel
+            contentDescription = "Transcription engine: $engineLabel. Tap to switch"
+        }
+        val isWritten = formatMode == CantoneseFormat.WRITTEN_CHINESE
+        formatChip?.apply {
+            text = if (isWritten) "書面語" else "口語"
+            contentDescription = if (isWritten) {
+                "Format: Written Chinese. Tap to switch to Spoken Cantonese"
+            } else {
+                "Format: Spoken Cantonese. Tap to switch to Written Chinese"
+            }
+        }
         phrasesChip?.let { chip ->
             chip.background = sculptedKeyDrawable(
                 fillColor = if (showQuickPhrases) palette.keyAccentBg else palette.surface,
@@ -869,6 +979,11 @@ class CantoVoiceImeService : InputMethodService() {
                 strokeWidthPx = dp(1)
             )
             chip.setTextColor(if (showQuickPhrases) palette.jadeAccent else palette.textSecondary)
+            chip.contentDescription = if (showQuickPhrases) {
+                "Quick Cantonese phrases active. Tap to show punctuation"
+            } else {
+                "Show quick Cantonese reply phrases"
+            }
         }
     }
 
@@ -879,15 +994,40 @@ class CantoVoiceImeService : InputMethodService() {
         val subtitle = micSubtitleView ?: return
 
         statusDot?.background = circleDrawable(
-            if (isLiveStreaming) palette.crimsonAccent else palette.jadeAccent
+            when {
+                isPasswordField -> palette.crimsonAccent
+                isLiveStreaming -> palette.crimsonAccent
+                else -> palette.jadeAccent
+            }
         )
-        cancelPadButton?.visibility = if (isLiveStreaming) View.VISIBLE else View.GONE
+        cancelPadButton?.apply {
+            visibility = if (isLiveStreaming) View.VISIBLE else View.GONE
+            importantForAccessibility = if (isLiveStreaming) {
+                View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            } else {
+                View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+            }
+        }
 
         when {
+            isPasswordField -> {
+                icon.setImageResource(R.drawable.ic_ime_mic)
+                title.text = "Password Field · Voice Disabled"
+                subtitle.text = "Use standard keyboard for passwords"
+                pad.contentDescription = "Voice dictation is disabled on password fields for privacy"
+                pad.background = sculptedKeyDrawable(
+                    fillColor = palette.surface,
+                    strokeColor = palette.keyStroke,
+                    rippleColor = palette.ripple,
+                    radiusPx = dp(18).toFloat(),
+                    strokeWidthPx = dp(1)
+                )
+            }
             isLiveStreaming && isHoldGestureLocked -> {
                 icon.setImageResource(R.drawable.ic_ime_stop)
                 title.text = "Hands-Free Live · Tap to Stop"
                 subtitle.text = "Keep speaking Cantonese · Tap pad when finished"
+                pad.contentDescription = "Hands-free live Cantonese dictation active. Tap to stop and commit"
                 pad.background = gradientPadDrawable(
                     startColor = palette.crimsonStart,
                     endColor = palette.crimsonEnd,
@@ -900,6 +1040,7 @@ class CantoVoiceImeService : InputMethodService() {
                 icon.setImageResource(R.drawable.ic_ime_waveform)
                 title.text = "Live Streaming · Release to Finish"
                 subtitle.text = "Streaming real-time Cantonese into host app"
+                pad.contentDescription = "Live streaming Cantonese dictation. Release to finish or tap to stop"
                 pad.background = gradientPadDrawable(
                     startColor = palette.crimsonStart,
                     endColor = palette.crimsonEnd,
@@ -912,6 +1053,7 @@ class CantoVoiceImeService : InputMethodService() {
                 icon.setImageResource(R.drawable.ic_ime_mic)
                 title.text = "Hold to Speak · Tap Hands-Free"
                 subtitle.text = "Live 粵語 · Zero-wait real-time streaming"
+                pad.contentDescription = "Hold to speak or tap for hands-free Cantonese voice typing"
                 pad.background = gradientPadDrawable(
                     startColor = palette.jadeStart,
                     endColor = palette.jadeEnd,
@@ -930,8 +1072,10 @@ class CantoVoiceImeService : InputMethodService() {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             gravity = Gravity.CENTER
-            minHeight = dp(32)
-            setPadding(dp(10), dp(5), dp(10), dp(5))
+            minWidth = dp(48)
+            minHeight = dp(48)
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+            markAsButtonRole(this)
             background = sculptedKeyDrawable(
                 fillColor = palette.surface,
                 strokeColor = palette.keyStroke,
@@ -961,6 +1105,7 @@ class CantoVoiceImeService : InputMethodService() {
             typeface = Typeface.create(Typeface.DEFAULT, if (accent || compactText) Typeface.BOLD else Typeface.NORMAL)
             gravity = Gravity.CENTER
             maxLines = 1
+            markAsButtonRole(this)
             background = sculptedKeyDrawable(
                 fillColor = if (accent) palette.keyAccentBg else palette.keyBg,
                 strokeColor = if (accent) palette.jadeAccent else palette.keyStroke,
@@ -968,11 +1113,49 @@ class CantoVoiceImeService : InputMethodService() {
                 radiusPx = dp(10).toFloat(),
                 strokeWidthPx = dp(1)
             )
-            layoutParams = LinearLayout.LayoutParams(0, dp(38), 1f).apply {
+            layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f).apply {
                 if (!isLast) marginEnd = dp(4)
             }
             setOnClickListener { onClick(it) }
         }
+    }
+
+    private fun animateScale(view: View, target: Float, durationMs: Long) {
+        view.animate().cancel()
+        if (!ValueAnimator.areAnimatorsEnabled()) {
+            view.scaleX = target
+            view.scaleY = target
+            return
+        }
+        view.animate().scaleX(target).scaleY(target).setDuration(durationMs).start()
+    }
+
+    private fun markAsButtonRole(view: View) {
+        ViewCompat.setAccessibilityDelegate(view, object : AccessibilityDelegateCompat() {
+            override fun onInitializeAccessibilityNodeInfo(
+                host: View,
+                info: AccessibilityNodeInfoCompat
+            ) {
+                super.onInitializeAccessibilityNodeInfo(host, info)
+                info.className = Button::class.java.name
+            }
+        })
+    }
+
+    private fun isPasswordInputType(inputType: Int): Boolean {
+        val cls = inputType and InputType.TYPE_MASK_CLASS
+        val variation = inputType and InputType.TYPE_MASK_VARIATION
+        return when (cls) {
+            InputType.TYPE_CLASS_TEXT -> variation == InputType.TYPE_TEXT_VARIATION_PASSWORD ||
+                variation == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD ||
+                variation == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD
+            InputType.TYPE_CLASS_NUMBER -> variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            else -> false
+        }
+    }
+
+    private fun isIncognitoEditor(info: EditorInfo?): Boolean {
+        return ((info?.imeOptions ?: 0) and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0
     }
 
     private fun dp(value: Int): Int {
