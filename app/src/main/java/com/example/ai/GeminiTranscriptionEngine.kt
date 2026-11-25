@@ -15,24 +15,37 @@ private const val TAG = "GeminiTranscriptionEngine"
 private const val INFERENCE_TIMEOUT_MS = 60_000L
 
 private val FULL_AUDIO_MODELS = listOf(
-    "gemini-2.5-flash",
+    "gemini-4-hydrogen",
     "gemini-3.8-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-3.5-flash-lite"
+    "gemini-3.5-flash-lite",
+    "gemini-2.5-flash"
 )
 
 private val FAST_DICTATION_MODELS = listOf(
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-flash",
+    "gemini-4-hydrogen",
+    "gemini-3.8-flash",
     "gemini-3.5-flash-lite",
-    "gemini-3.8-flash"
+    "gemini-2.5-flash-lite"
+)
+
+/**
+ * Latest Gemini "Flash" / "Medium" tier models for text-only tasks (Written Chinese conversion,
+ * Cantonese refinement, and Deep Review).
+ * - `gemini-4-hydrogen`: Gemini 4 family's speed/efficiency (Flash/Medium equivalent) model.
+ * - `gemini-3.8-flash`: Latest official Gemini Flash workhorse model.
+ */
+private val TEXT_FLASH_MEDIUM_MODELS = listOf(
+    "gemini-4-hydrogen",
+    "gemini-3.8-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-2.5-flash"
 )
 
 private val DEEP_REVIEW_MODELS = listOf(
-    "gemini-2.5-pro",
+    "gemini-4-hydrogen",
+    "gemini-3.8-flash",
     "gemini-4-argon",
-    "gemini-2.5-flash",
-    "gemini-3.8-flash"
+    "gemini-2.5-flash"
 )
 
 data class GeminiAudioOutput(
@@ -44,17 +57,20 @@ data class GeminiAudioOutput(
 )
 
 /**
- * Direct Google Gemini API transcription & Deep Review engine.
+ * Direct Google Gemini API transcription & text-processing engine.
  *
  * Exclusively uses the personal Gemini API key saved by the user in [SecureKeyStore]
  * via [DirectGeminiRestClient] (`generativelanguage.googleapis.com`) — zero Firebase dependencies.
  *
- * Dictation enhancements per Gemini API documentation:
- * - Top-level `systemInstruction` separating rules from user audio.
- * - Deterministic `temperature = 0.0` to prevent creative drift/hallucinations.
- * - `mediaResolution = "MEDIA_RESOLUTION_HIGH"` for WhatsApp/studio audio clarity.
- * - `thinkingBudget = 0` on fast keyboard dictation for lowest latency.
- * - Automatic model fallback with session memory of the first working model for your API key.
+ * Model tiering (late 2026):
+ * - Text & Multimodal workhorse (Flash / Medium tier): `gemini-4-hydrogen` -> `gemini-3.8-flash`
+ *   -> `gemini-3.5-flash-lite` -> `gemini-2.5-flash`.
+ * - Dictation enhancements per Gemini API documentation:
+ *   - Top-level `systemInstruction` separating rules from user audio.
+ *   - Deterministic `temperature = 0.0` to prevent creative drift/hallucinations.
+ *   - `mediaResolution = "MEDIA_RESOLUTION_HIGH"` for WhatsApp/studio audio clarity.
+ *   - `thinkingBudget = 0` on fast keyboard dictation and text conversion for lowest latency.
+ *   - Automatic model fallback with session memory of the first working model for your API key.
  */
 class GeminiTranscriptionEngine(
     private val keyStore: SecureKeyStore,
@@ -69,6 +85,9 @@ class GeminiTranscriptionEngine(
 
     @Volatile
     private var preferredFastModel: String? = null
+
+    @Volatile
+    private var preferredTextModel: String? = null
 
     suspend fun transcribeFullAudio(
         audio: PreparedAudio,
@@ -217,8 +236,8 @@ class GeminiTranscriptionEngine(
         val userPrompt = CantonesePrompts.buildSpokenToWrittenUserPrompt(spokenCantonese)
         val candidates = buildModelCandidates(
             customModel = keyStore.resolveCustomGeminiModel(),
-            preferred = preferredFastModel,
-            defaults = FAST_DICTATION_MODELS
+            preferred = preferredTextModel,
+            defaults = TEXT_FLASH_MEDIUM_MODELS
         )
 
         return try {
@@ -235,7 +254,7 @@ class GeminiTranscriptionEngine(
                     )
                 }
                 if (attempt.isSuccess) {
-                    preferredFastModel = modelName
+                    preferredTextModel = modelName
                     val converted = attempt.getOrNull()?.trim().orEmpty()
                     if (converted.isNotEmpty()) return Result.success(converted)
                 }
@@ -276,7 +295,7 @@ class GeminiTranscriptionEngine(
         val customModel = keyStore.resolveCustomGeminiModel()
         val candidates = buildModelCandidates(
             customModel = customModel,
-            preferred = null,
+            preferred = preferredTextModel,
             defaults = DEEP_REVIEW_MODELS
         )
 

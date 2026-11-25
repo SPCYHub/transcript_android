@@ -33,10 +33,10 @@ import java.security.MessageDigest
 
 private const val TAG = "LiveTranscriptionCtrl"
 private val LIVE_GEMINI_STREAM_MODELS = listOf(
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-flash",
+    "gemini-4-hydrogen",
+    "gemini-3.8-flash",
     "gemini-3.5-flash-lite",
-    "gemini-3.8-flash"
+    "gemini-2.5-flash-lite"
 )
 
 private enum class LivePipelineMode {
@@ -111,7 +111,7 @@ class LiveTranscriptionController(
 
         // Used ONLY when turn_detection == null (e.g. gpt-live-transcribe); never collides with server_vad
         private const val REALTIME_MANUAL_PAUSE_MS = 450L
-        private const val REALTIME_MANUAL_WINDOW_MS = 2_200L
+        private const val REALTIME_MANUAL_WINDOW_MS = 3_200L
 
         // Capped fallback audio buffer (up to ~16s) so short/quiet utterances can still be finalized on stop
         private const val MAX_FALLBACK_PCM_BYTES = 24_000 * 2 * 16

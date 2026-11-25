@@ -38,17 +38,16 @@ class TranscriptionRouter(
         return when (routingMode) {
             RoutingMode.GEMINI_ONLY ->
                 if (isGeminiReady) {
-                    if (sourceType == AudioSourceType.KEYBOARD_LIVE) "Gemini Direct Lite" else "Gemini Direct API"
+                    if (sourceType == AudioSourceType.KEYBOARD_LIVE) "Gemini 4 Hydrogen / 3.8 Flash" else "Gemini 4 Hydrogen / 3.8 Flash"
                 } else {
                     "Gemini (Key Needed)"
                 }
             RoutingMode.OPENAI_ONLY ->
-                if (isOpenAiReady) "OpenAI gpt-4o-transcribe" else "OpenAI (Key Needed)"
+                if (isOpenAiReady) "OpenAI gpt-transcribe" else "OpenAI (Key Needed)"
             RoutingMode.AUTO -> when {
-                sourceType == AudioSourceType.KEYBOARD_LIVE && isOpenAiReady -> "Auto -> OpenAI gpt-4o-transcribe"
-                isGeminiReady && sourceType == AudioSourceType.KEYBOARD_LIVE -> "Auto -> Gemini Direct Lite"
-                isGeminiReady -> "Auto -> Gemini Direct API"
-                isOpenAiReady -> "Auto -> OpenAI gpt-4o-transcribe"
+                sourceType == AudioSourceType.KEYBOARD_LIVE && isOpenAiReady -> "Auto -> OpenAI gpt-transcribe"
+                isGeminiReady -> "Auto -> Gemini 4 Hydrogen / 3.8 Flash"
+                isOpenAiReady -> "Auto -> OpenAI gpt-transcribe"
                 else -> "API Key Needed (Keys Tab)"
             }
         }
@@ -94,11 +93,31 @@ class TranscriptionRouter(
         return result
     }
 
-    suspend fun ensureWrittenChinese(record: TranscriptRecord): Result<TranscriptRecord> {
+    suspend fun ensureWrittenChinese(
+        record: TranscriptRecord,
+        routingMode: RoutingMode = RoutingMode.AUTO
+    ): Result<TranscriptRecord> {
         if (!record.writtenChinese.isNullOrBlank()) {
             return Result.success(record)
         }
-        return geminiEngine.convertSpokenToWritten(record.spokenCantonese).map { converted ->
+        val preferOpenAi = routingMode == RoutingMode.OPENAI_ONLY || (!isGeminiReady && isOpenAiReady)
+        val conversionResult = if (preferOpenAi) {
+            val openAiRes = openAiEngine.convertSpokenToWritten(record.spokenCantonese)
+            if (openAiRes.isSuccess || routingMode == RoutingMode.OPENAI_ONLY || !isGeminiReady) {
+                openAiRes
+            } else {
+                geminiEngine.convertSpokenToWritten(record.spokenCantonese)
+            }
+        } else {
+            val geminiRes = geminiEngine.convertSpokenToWritten(record.spokenCantonese)
+            if (geminiRes.isSuccess || routingMode == RoutingMode.GEMINI_ONLY || !isOpenAiReady) {
+                geminiRes
+            } else {
+                openAiEngine.convertSpokenToWritten(record.spokenCantonese)
+            }
+        }
+
+        return conversionResult.map { converted ->
             sessionStore.updateWrittenChinese(record.id, converted)
                 ?: record.copy(writtenChinese = converted)
         }
@@ -107,14 +126,45 @@ class TranscriptionRouter(
     suspend fun runDeepReview(
         record: TranscriptRecord,
         audioContext: PreparedAudio?,
-        customGlossary: String
+        customGlossary: String,
+        routingMode: RoutingMode = RoutingMode.AUTO
     ): Result<Pair<TranscriptRecord, DeepReviewResult>> {
-        return geminiEngine.deepReviewWithHighThinking(
-            spokenCantonese = record.spokenCantonese,
-            writtenChinese = record.writtenChinese,
-            audioContext = audioContext,
-            customGlossary = customGlossary
-        ).map { review ->
+        val preferOpenAi = routingMode == RoutingMode.OPENAI_ONLY || (!isGeminiReady && isOpenAiReady)
+        val reviewResult = if (preferOpenAi) {
+            val openAiRes = openAiEngine.deepReview(
+                spokenCantonese = record.spokenCantonese,
+                writtenChinese = record.writtenChinese,
+                customGlossary = customGlossary
+            )
+            if (openAiRes.isSuccess || routingMode == RoutingMode.OPENAI_ONLY || !isGeminiReady) {
+                openAiRes
+            } else {
+                geminiEngine.deepReviewWithHighThinking(
+                    spokenCantonese = record.spokenCantonese,
+                    writtenChinese = record.writtenChinese,
+                    audioContext = audioContext,
+                    customGlossary = customGlossary
+                )
+            }
+        } else {
+            val geminiRes = geminiEngine.deepReviewWithHighThinking(
+                spokenCantonese = record.spokenCantonese,
+                writtenChinese = record.writtenChinese,
+                audioContext = audioContext,
+                customGlossary = customGlossary
+            )
+            if (geminiRes.isSuccess || routingMode == RoutingMode.GEMINI_ONLY || !isOpenAiReady) {
+                geminiRes
+            } else {
+                openAiEngine.deepReview(
+                    spokenCantonese = record.spokenCantonese,
+                    writtenChinese = record.writtenChinese,
+                    customGlossary = customGlossary
+                )
+            }
+        }
+
+        return reviewResult.map { review ->
             val updated = sessionStore.attachDeepReview(record.id, review)
                 ?: record.copy(
                     deepReview = review,

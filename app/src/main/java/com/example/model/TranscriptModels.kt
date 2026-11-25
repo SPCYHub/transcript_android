@@ -30,10 +30,10 @@ enum class ThemePreference(val label: String) {
 enum class TranscriptionEngineId(val displayName: String, val modelTag: String) {
     GEMINI_LIVE("Gemini 3.5 Transcribe Live", "gemini-3.5-transcribe-live"),
     GEMINI_DIRECT_LIVE("Gemini Direct Live", "gemini-3.5-transcribe-live"),
-    GEMINI_FLASH("Gemini 3.8 Flash", "gemini-3.8-flash"),
-    GEMINI_FLASH_LITE("Gemini 3.5 Lite", "gemini-3.5-flash-lite"),
-    GEMINI_DIRECT_FLASH("Gemini Direct", "gemini-3.8-flash"),
-    GEMINI_DIRECT_LITE("Gemini Direct Lite", "gemini-3.5-flash-lite"),
+    GEMINI_FLASH("Gemini 4 Hydrogen", "gemini-4-hydrogen"),
+    GEMINI_FLASH_LITE("Gemini 3.8 Flash", "gemini-3.8-flash"),
+    GEMINI_DIRECT_FLASH("Gemini 4 Hydrogen", "gemini-4-hydrogen"),
+    GEMINI_DIRECT_LITE("Gemini 3.8 Flash", "gemini-3.8-flash"),
     OPENAI_GPT_TRANSCRIBE("OpenAI Transcribe", "gpt-transcribe"),
     OPENAI_MINI_FALLBACK("OpenAI Mini", "gpt-4o-mini-transcribe")
 }

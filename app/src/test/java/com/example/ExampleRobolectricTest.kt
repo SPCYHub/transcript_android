@@ -92,6 +92,9 @@ class ExampleRobolectricTest {
         )
         assertTrue(hintGemini.contains("Gemini"))
         assertEquals("gemini-3.5-transcribe-live", TranscriptionEngineId.GEMINI_DIRECT_LIVE.modelTag)
+        assertEquals("gemini-4-hydrogen", TranscriptionEngineId.GEMINI_DIRECT_FLASH.modelTag)
+        assertEquals("gemini-3.8-flash", TranscriptionEngineId.GEMINI_DIRECT_LITE.modelTag)
+        assertEquals("gpt-transcribe", TranscriptionEngineId.OPENAI_GPT_TRANSCRIBE.modelTag)
         assertNotNull(AppContainer.geminiLiveEngine)
     }
 }

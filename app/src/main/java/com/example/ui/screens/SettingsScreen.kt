@@ -299,7 +299,7 @@ fun SettingsScreen(
                                         .weight(1f)
                                         .testTag("custom_gemini_model_input"),
                                     singleLine = true,
-                                    placeholder = { Text("Default (gemini-2.5-flash)") },
+                                    placeholder = { Text("Default (gemini-4-hydrogen / gemini-3.8-flash)") },
                                     shape = RoundedCornerShape(12.dp)
                                 )
                                 OutlinedButton(
@@ -359,7 +359,7 @@ fun SettingsScreen(
                     }
 
                     Text(
-                        text = "Enables OpenAI gpt-transcribe & Realtime WebSocket live Cantonese streaming alongside Gemini.",
+                        text = "Enables OpenAI gpt-transcribe, gpt-live-transcribe Realtime WebSocket streaming, and GPT-6 Sol (gpt-6.2-sol) for Written Chinese & Deep Review.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

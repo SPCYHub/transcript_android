@@ -17,8 +17,11 @@ import java.util.concurrent.TimeUnit
 
 private const val TAG = "GeminiLiveStreamEngine"
 private const val PRIMARY_TRANSCRIBE_LIVE_MODEL = "gemini-3.5-transcribe-live"
-private const val FALLBACK_LIVE_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+private const val FALLBACK_LIVE_MODEL = "gemini-3.8-live"
 private const val SECONDARY_LIVE_MODEL = "gemini-3.1-flash-live-preview"
+private const val LEGACY_LIVE_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+private const val GEMINI_BIDI_WS_BASE =
+    "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 private const val MAX_PRE_CONNECT_PCM_BYTES = 16_000 * 2 * 5 // 5s at 16kHz PCM16
 
 private data class DirectLiveProfile(
@@ -114,10 +117,12 @@ class GeminiLiveStreamEngine(
                 add(DirectLiveProfile(primaryModel, isDedicatedTranscribeModel = true, includeLanguageHint = false, includeVadTuning = false))
                 add(DirectLiveProfile(FALLBACK_LIVE_MODEL, isDedicatedTranscribeModel = false, includeLanguageHint = false, includeVadTuning = true))
                 add(DirectLiveProfile(SECONDARY_LIVE_MODEL, isDedicatedTranscribeModel = false, includeLanguageHint = false, includeVadTuning = false))
+                add(DirectLiveProfile(LEGACY_LIVE_MODEL, isDedicatedTranscribeModel = false, includeLanguageHint = false, includeVadTuning = false))
             } else {
                 add(DirectLiveProfile(primaryModel, isDedicatedTranscribeModel = false, includeLanguageHint = false, includeVadTuning = true))
                 add(DirectLiveProfile(primaryModel, isDedicatedTranscribeModel = false, includeLanguageHint = false, includeVadTuning = false))
                 add(DirectLiveProfile(PRIMARY_TRANSCRIBE_LIVE_MODEL, isDedicatedTranscribeModel = true, includeLanguageHint = false, includeVadTuning = false))
+                add(DirectLiveProfile(LEGACY_LIVE_MODEL, isDedicatedTranscribeModel = false, includeLanguageHint = false, includeVadTuning = false))
             }
         }
         activeDirectProfileIndex = 0
@@ -199,7 +204,7 @@ class GeminiLiveStreamEngine(
         val profile = activeDirectProfiles.getOrNull(activeDirectProfileIndex) ?: return
         val listener = activeDirectListener ?: return
 
-        val url = ProviderRequestAuth.geminiLiveWebSocketUrl(activeDirectApiKey)
+        val url = "$GEMINI_BIDI_WS_BASE?key=$activeDirectApiKey"
         val request = Request.Builder()
             .url(url)
             .build()

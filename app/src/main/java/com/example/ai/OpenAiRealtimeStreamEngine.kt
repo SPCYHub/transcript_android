@@ -28,15 +28,17 @@ private data class RealtimeSessionProfile(
 )
 
 private val SESSION_PROFILES = listOf(
-    // 1. Standard GA Realtime transcription with near-field noise reduction + server VAD
-    RealtimeSessionProfile(modelId = "gpt-4o-transcribe", useServerVad = true, enableNoiseReduction = true, legacyBetaSchema = false),
-    // 2. Standard GA Realtime transcription without noise_reduction (compatibility fallback)
-    RealtimeSessionProfile(modelId = "gpt-4o-transcribe", useServerVad = true, enableNoiseReduction = false, legacyBetaSchema = false),
-    // 3. Fast mini realtime transcription with near-field noise reduction + server VAD
-    RealtimeSessionProfile(modelId = "gpt-4o-mini-transcribe", useServerVad = true, enableNoiseReduction = true, legacyBetaSchema = false),
-    // 4. Dedicated gpt-live-transcribe (turn_detection = null per OpenAI spec, client commits)
+    // 1. Latest dedicated OpenAI streaming STT model (turn_detection = null per OpenAI spec, client commits)
     RealtimeSessionProfile(modelId = "gpt-live-transcribe", useServerVad = false, enableNoiseReduction = true, legacyBetaSchema = false),
-    // 5. Legacy beta schema fallback (`transcription_session.update`)
+    // 2. Latest dedicated streaming STT without noise_reduction (compatibility fallback)
+    RealtimeSessionProfile(modelId = "gpt-live-transcribe", useServerVad = false, enableNoiseReduction = false, legacyBetaSchema = false),
+    // 3. Latest GA gpt-transcribe with near-field noise reduction + server VAD
+    RealtimeSessionProfile(modelId = "gpt-transcribe", useServerVad = true, enableNoiseReduction = true, legacyBetaSchema = false),
+    // 4. Legacy GA fallback with near-field noise reduction + server VAD
+    RealtimeSessionProfile(modelId = "gpt-4o-transcribe", useServerVad = true, enableNoiseReduction = true, legacyBetaSchema = false),
+    // 5. Fast mini realtime transcription fallback
+    RealtimeSessionProfile(modelId = "gpt-4o-mini-transcribe", useServerVad = true, enableNoiseReduction = true, legacyBetaSchema = false),
+    // 6. Legacy beta schema fallback (`transcription_session.update`)
     RealtimeSessionProfile(modelId = "gpt-4o-transcribe", useServerVad = true, enableNoiseReduction = true, legacyBetaSchema = true)
 )
 
@@ -107,7 +109,7 @@ class OpenAiRealtimeStreamEngine(
         get() = SESSION_PROFILES.getOrNull(currentProfileIndex)?.useServerVad ?: false
 
     val activeModelId: String
-        get() = SESSION_PROFILES.getOrNull(currentProfileIndex)?.modelId ?: "gpt-4o-transcribe"
+        get() = SESSION_PROFILES.getOrNull(currentProfileIndex)?.modelId ?: "gpt-live-transcribe"
 
     val currentPromptUsed: String
         get() = activePrompt
@@ -372,7 +374,7 @@ class OpenAiRealtimeStreamEngine(
                     Log.d(TAG, "OpenAI Realtime session ready ($eventType, model=${profile?.modelId})")
                     flushPendingChunks(webSocket)
                     listener.onSessionReady(
-                        modelName = profile?.modelId ?: "gpt-4o-transcribe",
+                        modelName = profile?.modelId ?: "gpt-live-transcribe",
                         usesServerVad = profile?.useServerVad ?: false
                     )
                 }

@@ -451,12 +451,13 @@ class StudioViewModel(
         viewModelScope.launch {
             _uiState.value = current.copy(isRunningDeepReview = true, deepReviewError = null)
             val audioContext = lastPreparedAudio?.takeIf { it.sha256 == current.record.audioSha256 }
-            val glossary = preferencesRepo.currentPreferences().customGlossary
+            val prefs = preferencesRepo.currentPreferences()
 
             val result = router.runDeepReview(
                 record = current.record,
                 audioContext = audioContext,
-                customGlossary = glossary
+                customGlossary = prefs.customGlossary,
+                routingMode = prefs.routingMode
             )
 
             result.onSuccess { (updatedRecord, _) ->
@@ -483,8 +484,9 @@ class StudioViewModel(
         viewModelScope.launch {
             val current = _uiState.value as? StudioUiState.Success ?: return@launch
             _uiState.value = current.copy(isConvertingWritten = true)
+            val routingMode = preferencesRepo.currentPreferences().routingMode
 
-            router.ensureWrittenChinese(record).onSuccess { updated ->
+            router.ensureWrittenChinese(record, routingMode = routingMode).onSuccess { updated ->
                 val latest = _uiState.value as? StudioUiState.Success ?: return@onSuccess
                 _uiState.value = latest.copy(record = updated, isConvertingWritten = false)
             }.onFailure { err ->
