@@ -161,7 +161,7 @@ fun SettingsScreen(
                         modifier = Modifier.size(18.dp)
                     )
                     Text(
-                        text = "Keys are encrypted locally with Android Keystore (AES-256-GCM), excluded from cloud backups, and sent only to Google Gemini or OpenAI.",
+                        text = "Keys are encrypted locally with Android Keystore (AES-256-GCM), excluded from cloud backups, and sent only via api-router.alchemys.ai to Google Gemini or OpenAI.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onPrimaryContainer
                     )
@@ -208,7 +208,7 @@ fun SettingsScreen(
                     }
 
                     Text(
-                        text = "Required for Gemini engines (Direct REST, Live WebSocket, Written Chinese conversion & Deep Review). Paste your Google AI Studio API key to call generativelanguage.googleapis.com directly — no Firebase used.",
+                        text = "Required for Gemini engines (REST, Live WebSocket, Written Chinese conversion & Deep Review). Paste your Google AI Studio API key to call Gemini via api-router.alchemys.ai — no Firebase used.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -490,7 +490,7 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.titleSmall
                         )
                         Text(
-                            text = "All Gemini and OpenAI transcription calls connect directly to Google AI Studio and OpenAI using your saved keys, with near-field noise reduction, deterministic temperature = 0 decoding, and prompt-leakage protection.",
+                            text = "All Gemini and OpenAI transcription calls route through api-router.alchemys.ai using your saved keys, with near-field noise reduction, deterministic temperature = 0 decoding, and prompt-leakage protection.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

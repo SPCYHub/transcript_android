@@ -19,7 +19,7 @@ import java.util.concurrent.TimeUnit
 private const val TAG = "DirectGeminiRest"
 
 /**
- * Direct Google Gemini REST API client (`generativelanguage.googleapis.com`) using the
+ * Google Gemini REST API client (routed via `api-router.alchemys.ai/gemini`) using the
  * end-user's personal Gemini API key saved in-app (no Firebase / no App Check).
  *
  * Implements official Gemini API audio transcription best practices:

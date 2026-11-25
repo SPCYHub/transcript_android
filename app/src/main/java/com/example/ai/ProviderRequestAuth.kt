@@ -1,18 +1,22 @@
 package com.example.ai
 
 /**
- * Shared request authentication helpers for direct provider APIs.
+ * Shared request authentication and endpoint helpers for provider APIs routed via `api-router.alchemys.ai`.
  *
  * Keys are always supplied by the caller (typically [com.example.data.SecureKeyStore]).
- * Nothing here embeds, defaults, or reads a build-time App Check token.
+ * Nothing here embeds, defaults, or reads a build-time App Check token, and no router token is used.
  */
 object ProviderRequestAuth {
     const val GEMINI_API_KEY_HEADER = "x-goog-api-key"
-    const val GEMINI_REST_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+    const val GEMINI_REST_BASE = "https://api-router.alchemys.ai/gemini/v1beta/models"
+    const val GEMINI_MODELS_LIST_URL = "$GEMINI_REST_BASE?pageSize=5"
     const val GEMINI_BIDI_WS_BASE =
-        "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+        "wss://api-router.alchemys.ai/gemini/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+    const val OPENAI_REST_BASE = "https://api-router.alchemys.ai/openai/"
+    const val OPENAI_CHAT_COMPLETIONS_URL = "https://api-router.alchemys.ai/openai/v1/chat/completions"
+    const val OPENAI_MODELS_URL = "https://api-router.alchemys.ai/openai/v1/models"
     const val OPENAI_REALTIME_TRANSCRIPTION_URL =
-        "wss://api.openai.com/v1/realtime?intent=transcription"
+        "wss://api-router.alchemys.ai/openai/v1/realtime?intent=transcription"
 
     private val MODEL_NAME_REGEX = Regex("^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
     private val KEY_QUERY_REGEX = Regex("([?&]key=)[^&\\s\"']+", RegexOption.IGNORE_CASE)

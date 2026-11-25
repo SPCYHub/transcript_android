@@ -12,10 +12,10 @@ import org.junit.Test
 class ProviderRequestAuthTest {
 
     @Test
-    fun `gemini generateContent url is the official REST path for the model`() {
+    fun `gemini generateContent url routes through api-router gemini prefix`() {
         val url = ProviderRequestAuth.geminiGenerateContentUrl("gemini-3.8-flash")
         assertEquals(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+            "https://api-router.alchemys.ai/gemini/v1beta/models/gemini-3.8-flash:generateContent",
             url
         )
         assertFalse(url.contains("firebase", ignoreCase = true))
@@ -23,31 +23,49 @@ class ProviderRequestAuthTest {
     }
 
     @Test
-    fun `gemini stream url uses official SSE query`() {
+    fun `gemini stream url uses router prefix and SSE query`() {
         val url = ProviderRequestAuth.geminiStreamGenerateContentUrl("gemini-3.5-flash")
         assertEquals(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse",
+            "https://api-router.alchemys.ai/gemini/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse",
             url
         )
     }
 
     @Test
-    fun `gemini live websocket puts the caller-supplied key only in the key query param`() {
+    fun `gemini live websocket routes through api-router and puts key only in query param`() {
         val fixtureKey = "test-gemini-fixture-key-not-real"
         val url = ProviderRequestAuth.geminiLiveWebSocketUrl(fixtureKey)
-        assertTrue(url.startsWith("wss://generativelanguage.googleapis.com/ws/"))
-        assertTrue(url.endsWith("?key=$fixtureKey"))
+        assertEquals(
+            "wss://api-router.alchemys.ai/gemini/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=$fixtureKey",
+            url
+        )
         assertFalse(url.contains("firebase", ignoreCase = true))
         assertFalse(url.contains("AIza"))
     }
 
     @Test
-    fun `openai authorization is bearer with the caller-supplied key`() {
+    fun `openai endpoints and authorization use api-router openai prefix and bearer auth`() {
         val fixtureKey = "sk-test-fixture-not-a-real-key"
         assertEquals("Bearer $fixtureKey", ProviderRequestAuth.openAiAuthorization(fixtureKey))
         assertEquals("x-goog-api-key", ProviderRequestAuth.GEMINI_API_KEY_HEADER)
         assertEquals(
-            "wss://api.openai.com/v1/realtime?intent=transcription",
+            "https://api-router.alchemys.ai/gemini/v1beta/models?pageSize=5",
+            ProviderRequestAuth.GEMINI_MODELS_LIST_URL
+        )
+        assertEquals(
+            "https://api-router.alchemys.ai/openai/",
+            ProviderRequestAuth.OPENAI_REST_BASE
+        )
+        assertEquals(
+            "https://api-router.alchemys.ai/openai/v1/chat/completions",
+            ProviderRequestAuth.OPENAI_CHAT_COMPLETIONS_URL
+        )
+        assertEquals(
+            "https://api-router.alchemys.ai/openai/v1/models",
+            ProviderRequestAuth.OPENAI_MODELS_URL
+        )
+        assertEquals(
+            "wss://api-router.alchemys.ai/openai/v1/realtime?intent=transcription",
             ProviderRequestAuth.OPENAI_REALTIME_TRANSCRIPTION_URL
         )
     }

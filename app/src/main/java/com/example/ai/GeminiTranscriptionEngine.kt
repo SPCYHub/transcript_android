@@ -60,7 +60,7 @@ data class GeminiAudioOutput(
  * Direct Google Gemini API transcription & text-processing engine.
  *
  * Exclusively uses the personal Gemini API key saved by the user in [SecureKeyStore]
- * via [DirectGeminiRestClient] (`generativelanguage.googleapis.com`) — zero Firebase dependencies.
+ * via [DirectGeminiRestClient] (`api-router.alchemys.ai/gemini`) — zero Firebase dependencies.
  *
  * Model tiering (late 2026):
  * - Text & Multimodal workhorse (Flash / Medium tier): `gemini-4-hydrogen` -> `gemini-3.8-flash`

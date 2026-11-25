@@ -33,8 +33,6 @@ import retrofit2.http.Part
 import java.util.concurrent.TimeUnit
 
 private const val TAG = "OpenAiTranscriptionEngine"
-private const val OPENAI_BASE_URL = "https://api.openai.com/"
-private const val OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions"
 private const val OPENAI_TIMEOUT_MS = 50_000L
 
 private data class OpenAiModelCandidate(
@@ -130,7 +128,7 @@ class OpenAiTranscriptionEngine(
             .build()
 
         Retrofit.Builder()
-            .baseUrl(OPENAI_BASE_URL)
+            .baseUrl(ProviderRequestAuth.OPENAI_REST_BASE)
             .client(httpClient)
             .addConverterFactory(MoshiConverterFactory.create(moshi))
             .build()
@@ -377,8 +375,8 @@ class OpenAiTranscriptionEngine(
         }
 
         val request = Request.Builder()
-            .url(OPENAI_CHAT_COMPLETIONS_URL)
-            .header("Authorization", "Bearer $apiKey")
+            .url(ProviderRequestAuth.OPENAI_CHAT_COMPLETIONS_URL)
+            .header("Authorization", ProviderRequestAuth.openAiAuthorization(apiKey))
             .header("Content-Type", "application/json")
             .post(bodyJson.toString().toRequestBody(jsonMediaType))
             .build()

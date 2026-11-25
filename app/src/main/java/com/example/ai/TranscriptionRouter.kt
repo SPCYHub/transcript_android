@@ -10,8 +10,8 @@ import com.example.model.TranscriptRecord
 import com.example.model.UserPreferences
 
 /**
- * Efficiency-first transcription coordinator routing across the user's saved Direct Gemini API
- * (`generativelanguage.googleapis.com`) and OpenAI (`/v1/audio/transcriptions`).
+ * Efficiency-first transcription coordinator routing across the user's saved Gemini API
+ * (`api-router.alchemys.ai/gemini`) and OpenAI (`api-router.alchemys.ai/openai`) keys.
  *
  * Optimization highlights:
  * - Instant 0ms SHA-256 session deduplication cache.

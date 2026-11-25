@@ -160,7 +160,7 @@ class SecureKeyStore(appContext: Context) {
 
         try {
             val request = Request.Builder()
-                .url("https://generativelanguage.googleapis.com/v1beta/models?pageSize=5")
+                .url(ProviderRequestAuth.GEMINI_MODELS_LIST_URL)
                 .header(ProviderRequestAuth.GEMINI_API_KEY_HEADER, keyToTest)
                 .get()
                 .build()
@@ -201,7 +201,7 @@ class SecureKeyStore(appContext: Context) {
 
         try {
             val request = Request.Builder()
-                .url("https://api.openai.com/v1/models")
+                .url(ProviderRequestAuth.OPENAI_MODELS_URL)
                 .header("Authorization", ProviderRequestAuth.openAiAuthorization(keyToTest))
                 .get()
                 .build()
