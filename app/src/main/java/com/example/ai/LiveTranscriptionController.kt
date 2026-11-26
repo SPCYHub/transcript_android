@@ -43,7 +43,8 @@ private enum class LivePipelineMode {
     OPENAI_REALTIME,
     OPENAI_CHUNKED_REST,
     GEMINI_LIVE_API,
-    GEMINI_VAD_STREAM
+    GEMINI_VAD_STREAM,
+    LOCAL_WHISPER_VAD
 }
 
 sealed interface LiveFinalizeResult {
@@ -99,12 +100,15 @@ class LiveTranscriptionController(
     private val geminiLive: GeminiLiveStreamEngine,
     private val openAiRealtime: OpenAiRealtimeStreamEngine,
     private val openAiRest: OpenAiTranscriptionEngine,
+    private val localWhisperEngine: LocalWhisperEngine,
     private val sessionStore: SessionTranscriptStore
 ) {
 
     companion object {
         private const val CHUNK_VAD_PAUSE_MS = 380L
         private const val CHUNK_MAX_WINDOW_MS = 1_450L
+        private const val LOCAL_VAD_PAUSE_MS = 450L
+        private const val LOCAL_MAX_WINDOW_MS = 3_000L
         private const val CHUNK_MIN_SEGMENT_BYTES = 16_000 * 2 * 250 / 1000 // 250ms at 16kHz PCM16
         private const val PRE_ROLL_MAX_FRAMES = 3 // ~300ms pre-roll so opening syllables aren't clipped
         private const val STREAM_CHUNK_TIMEOUT_MS = 30_000L
@@ -178,15 +182,16 @@ class LiveTranscriptionController(
 
         val hasOpenAi = openAiRealtime.isConfigured
         val hasGemini = keyStore.hasDirectGeminiKey()
+        val hasLocal = localWhisperEngine.isConfigured
 
-        val useOpenAi = when (preferences.routingMode) {
+        return when (preferences.routingMode) {
             RoutingMode.OPENAI_ONLY -> {
                 if (!hasOpenAi) {
-                    val msg = "OpenAI API key is not configured. Add your OpenAI key in the Keys tab, or switch to Auto / Gemini."
+                    val msg = "OpenAI API key is not configured. Add your OpenAI key in the Keys tab, or switch to Auto / Gemini / Local."
                     _state.value = LiveStreamState(errorMessage = msg)
                     return Result.failure(IllegalStateException(msg))
                 }
-                true
+                startOpenAiRealtimeSession(scope, preferences)
             }
             RoutingMode.GEMINI_ONLY -> {
                 if (!hasGemini) {
@@ -194,25 +199,26 @@ class LiveTranscriptionController(
                     _state.value = LiveStreamState(errorMessage = msg)
                     return Result.failure(IllegalStateException(msg))
                 }
-                false
+                startGeminiLiveApiSession(scope, preferences)
             }
-            RoutingMode.AUTO -> {
-                when {
-                    hasOpenAi -> true
-                    hasGemini -> false
-                    else -> {
-                        val msg = "No API key configured. Add your Gemini or OpenAI API key in the Keys tab to start live dictation."
-                        _state.value = LiveStreamState(errorMessage = msg)
-                        return Result.failure(IllegalStateException(msg))
-                    }
+            RoutingMode.LOCAL_ONLY -> {
+                if (!hasLocal) {
+                    val msg = "No offline Whisper model installed. Download or import one in Keys -> Local Whisper."
+                    _state.value = LiveStreamState(errorMessage = msg)
+                    return Result.failure(IllegalStateException(msg))
+                }
+                startLocalWhisperVadSession(scope, preferences)
+            }
+            RoutingMode.AUTO -> when {
+                hasOpenAi -> startOpenAiRealtimeSession(scope, preferences)
+                hasGemini -> startGeminiLiveApiSession(scope, preferences)
+                hasLocal -> startLocalWhisperVadSession(scope, preferences, isAutoOfflineFallback = true)
+                else -> {
+                    val msg = "No API key or local Whisper model configured. Add a key or download a Local Whisper model in the Keys tab."
+                    _state.value = LiveStreamState(errorMessage = msg)
+                    Result.failure(IllegalStateException(msg))
                 }
             }
-        }
-
-        return if (useOpenAi) {
-            startOpenAiRealtimeSession(scope, preferences)
-        } else {
-            startGeminiLiveApiSession(scope, preferences)
         }
     }
 
@@ -279,7 +285,8 @@ class LiveTranscriptionController(
             }
 
             LivePipelineMode.OPENAI_CHUNKED_REST,
-            LivePipelineMode.GEMINI_VAD_STREAM -> {
+            LivePipelineMode.GEMINI_VAD_STREAM,
+            LivePipelineMode.LOCAL_WHISPER_VAD -> {
                 flushRemainingChunkSegment(forceFallbackIfEmpty = _state.value.combinedText.isBlank())
                 segmentQueue?.close()
                 chunkConsumerJob?.join()
@@ -315,6 +322,7 @@ class LiveTranscriptionController(
             LivePipelineMode.OPENAI_CHUNKED_REST -> "OpenAI Live PCM16 16kHz"
             LivePipelineMode.GEMINI_LIVE_API -> "Gemini Direct Live 16kHz WS"
             LivePipelineMode.GEMINI_VAD_STREAM -> "Gemini Direct PCM16 16kHz"
+            LivePipelineMode.LOCAL_WHISPER_VAD -> "Local Whisper PCM16 16kHz"
         }
 
         val record = TranscriptRecord(
@@ -329,12 +337,20 @@ class LiveTranscriptionController(
             audioSizeBytes = finalState.totalAudioBytes,
             audioSha256 = sha256,
             spokenCantonese = fullText,
-            writtenChinese = if (isWritten && modeAtStop != LivePipelineMode.OPENAI_REALTIME && modeAtStop != LivePipelineMode.OPENAI_CHUNKED_REST) {
+            writtenChinese = if (isWritten &&
+                modeAtStop != LivePipelineMode.OPENAI_REALTIME &&
+                modeAtStop != LivePipelineMode.OPENAI_CHUNKED_REST &&
+                modeAtStop != LivePipelineMode.LOCAL_WHISPER_VAD
+            ) {
                 fullText
             } else {
                 null
             },
-            detectedLanguageMix = "Cantonese (Live)",
+            detectedLanguageMix = if (modeAtStop == LivePipelineMode.LOCAL_WHISPER_VAD) {
+                "Cantonese (Local Live)"
+            } else {
+                "Cantonese (Live)"
+            },
             engineUsed = finalState.engineId,
             latencyMillis = finalState.lastChunkLatencyMs
         )
@@ -440,12 +456,28 @@ class LiveTranscriptionController(
                 override fun onError(message: String) {
                     if (!_state.value.isActive || isFinalizing) return
                     val existingConfirmed = _state.value.combinedText
+                    val bufferedPcm = drainFallbackPcm()
 
                     if (preferences.routingMode == RoutingMode.AUTO && keyStore.hasDirectGeminiKey()) {
                         Log.w(TAG, "OpenAI Realtime error (${ProviderRequestAuth.redactSecrets(message)}); failing over live to Gemini Direct Live")
                         openAiRealtime.disconnect()
                         pcmRecorder.stop()
                         startGeminiLiveApiSession(scope, preferences, carryOverText = existingConfirmed)
+                    } else if (preferences.routingMode == RoutingMode.AUTO &&
+                        !isAuthError(message) &&
+                        localWhisperEngine.isConfigured &&
+                        isConnectivityMessage(message)
+                    ) {
+                        Log.w(TAG, "OpenAI Realtime offline (${ProviderRequestAuth.redactSecrets(message)}); failing over live to Local Whisper")
+                        openAiRealtime.disconnect()
+                        pcmRecorder.stop()
+                        startLocalWhisperVadSession(
+                            scope = scope,
+                            preferences = preferences,
+                            carryOverText = existingConfirmed,
+                            isAutoOfflineFallback = true,
+                            initialBufferedPcm = bufferedPcm.takeIf { it.size >= CHUNK_MIN_SEGMENT_BYTES }
+                        )
                     } else if (!isAuthError(message)) {
                         Log.w(TAG, "OpenAI Realtime unavailable (${ProviderRequestAuth.redactSecrets(message)}); switching live to OpenAI Chunked REST")
                         openAiRealtime.disconnect()
@@ -741,6 +773,23 @@ class LiveTranscriptionController(
 
                     val existingText = _state.value.combinedText
                     val bufferedPcm = drainFallbackPcm()
+                    if (preferences.routingMode == RoutingMode.AUTO &&
+                        localWhisperEngine.isConfigured &&
+                        isConnectivityMessage(message)
+                    ) {
+                        Log.w(TAG, "Gemini Live API offline (${ProviderRequestAuth.redactSecrets(message)}); failing over seamlessly to Local Whisper")
+                        geminiLive.disconnect()
+                        pcmRecorder.stop()
+                        startLocalWhisperVadSession(
+                            scope = scope,
+                            preferences = preferences,
+                            carryOverText = existingText,
+                            isAutoOfflineFallback = true,
+                            initialBufferedPcm = bufferedPcm.takeIf { it.size >= CHUNK_MIN_SEGMENT_BYTES }
+                        )
+                        return
+                    }
+
                     Log.w(TAG, "Gemini Live API error (${ProviderRequestAuth.redactSecrets(message)}); failing over seamlessly to Gemini VAD chunked streaming")
                     geminiLive.disconnect()
                     pcmRecorder.stop()
@@ -829,9 +878,120 @@ class LiveTranscriptionController(
         )
     }
 
+    // --- Pipeline 5: On-Device Local Whisper VAD Chunked Streaming ---
+
+    private fun startLocalWhisperVadSession(
+        scope: CoroutineScope,
+        preferences: UserPreferences,
+        carryOverText: String = "",
+        isAutoOfflineFallback: Boolean = false,
+        initialBufferedPcm: ByteArray? = null
+    ): Result<Unit> {
+        pipelineMode = LivePipelineMode.LOCAL_WHISPER_VAD
+        activeSampleRateHz = LivePcmStreamRecorder.SAMPLE_RATE_GEMINI_HZ
+        clearBuffers()
+
+        val modelShort = localWhisperEngine.activeModelShortName ?: "GGML"
+        val label = if (isAutoOfflineFallback) {
+            "Offline Fallback · Local Whisper ($modelShort)"
+        } else {
+            "Local Whisper · $modelShort"
+        }
+
+        _state.value = LiveStreamState(
+            isActive = true,
+            isConnecting = false,
+            confirmedText = carryOverText,
+            partialText = "",
+            engineLabel = label,
+            engineId = localWhisperEngine.activeEngineId
+        )
+
+        val queue = Channel<ByteArray>(capacity = Channel.UNLIMITED)
+        segmentQueue = queue
+        if (initialBufferedPcm != null && initialBufferedPcm.isNotEmpty()) {
+            queue.trySend(initialBufferedPcm)
+        }
+
+        chunkConsumerJob?.cancel()
+        chunkConsumerJob = scope.launch(Dispatchers.IO) {
+            for (pcmSegment in queue) {
+                transcribeLocalWhisperSegment(pcmSegment, preferences)
+            }
+        }
+
+        startMetricsRelay(scope)
+
+        return pcmRecorder.start(
+            scope = scope,
+            sampleRateHz = LivePcmStreamRecorder.SAMPLE_RATE_GEMINI_HZ,
+            onChunk = { chunk ->
+                handleChunkedPcm(chunk, queue)
+            },
+            onError = { err ->
+                _state.update { it.copy(errorMessage = err.localizedMessage ?: "Mic capture error") }
+            }
+        )
+    }
+
+    private suspend fun transcribeLocalWhisperSegment(
+        pcmBytes: ByteArray,
+        preferences: UserPreferences
+    ) {
+        val startedAt = System.currentTimeMillis()
+        val contextTail = _state.value.confirmedText.takeLast(48)
+        val prompt = CantonesePrompts.buildLocalWhisperPrompt(
+            customGlossary = preferences.customGlossary,
+            contextTail = contextTail
+        )
+        _state.update { it.copy(isTranscribingChunk = true) }
+
+        val res = localWhisperEngine.transcribePcm16(
+            pcmBytes = pcmBytes,
+            sampleRateHz = LivePcmStreamRecorder.SAMPLE_RATE_GEMINI_HZ,
+            customGlossary = preferences.customGlossary,
+            contextTail = contextTail,
+            singleSegment = true
+        )
+        res.onSuccess { cleanText ->
+            val latency = (System.currentTimeMillis() - startedAt).coerceAtLeast(1L)
+            val netNew = commitSanitizedSegment(
+                rawSegment = cleanText,
+                activePrompt = prompt,
+                engineIdOverride = localWhisperEngine.activeEngineId,
+                latencyOverride = latency
+            )
+            if (netNew.isNotEmpty()) {
+                withContext(Dispatchers.Main.immediate) {
+                    onLiveSegmentCommit?.invoke(netNew)
+                }
+            }
+        }.onFailure { err ->
+            val safeMsg = err.localizedMessage ?: "Local Whisper inference failed"
+            Log.e(TAG, "Local Whisper live chunk failed: $safeMsg")
+            _state.update {
+                it.copy(
+                    isTranscribingChunk = false,
+                    errorMessage = safeMsg
+                )
+            }
+        }
+    }
+
     private fun handleChunkedPcm(chunk: PcmAudioChunk, queue: Channel<ByteArray>) {
         appendFallbackPcm(chunk.pcmBytes)
         _state.update { it.copy(totalAudioBytes = it.totalAudioBytes + chunk.pcmBytes.size) }
+
+        val vadPauseMs = if (pipelineMode == LivePipelineMode.LOCAL_WHISPER_VAD) {
+            LOCAL_VAD_PAUSE_MS
+        } else {
+            CHUNK_VAD_PAUSE_MS
+        }
+        val maxWindowMs = if (pipelineMode == LivePipelineMode.LOCAL_WHISPER_VAD) {
+            LOCAL_MAX_WINDOW_MS
+        } else {
+            CHUNK_MAX_WINDOW_MS
+        }
 
         var readySegment: ByteArray? = null
         synchronized(segmentBufferLock) {
@@ -858,9 +1018,9 @@ class LiveTranscriptionController(
                 val silenceDuration = chunk.timestampMs - lastSpeechSeenAtMs
                 val windowDuration = chunk.timestampMs - segmentStartedAtMs
 
-                val shouldDispatch = (silenceDuration >= CHUNK_VAD_PAUSE_MS &&
+                val shouldDispatch = (silenceDuration >= vadPauseMs &&
                     segmentPcmBuffer.size() >= CHUNK_MIN_SEGMENT_BYTES) ||
-                    windowDuration >= CHUNK_MAX_WINDOW_MS
+                    windowDuration >= maxWindowMs
 
                 if (shouldDispatch) {
                     readySegment = segmentPcmBuffer.toByteArray()
@@ -1085,6 +1245,19 @@ class LiveTranscriptionController(
             message.contains("Incorrect API key", ignoreCase = true) ||
             message.contains("API key not valid", ignoreCase = true) ||
             message.contains("authentication", ignoreCase = true)
+    }
+
+    private fun isConnectivityMessage(message: String?): Boolean {
+        if (message.isNullOrBlank()) return false
+        val m = message.lowercase()
+        return m.contains("unable to resolve host") ||
+            m.contains("failed to connect") ||
+            m.contains("network") ||
+            m.contains("offline") ||
+            m.contains("timeout") ||
+            m.contains("timed out") ||
+            m.contains("socket") ||
+            m.contains("connection")
     }
 
     private fun startMetricsRelay(scope: CoroutineScope) {

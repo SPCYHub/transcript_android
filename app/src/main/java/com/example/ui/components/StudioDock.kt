@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -63,6 +64,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.core.LocalStudioHaptics
 import com.example.model.CantoneseFormat
@@ -185,7 +187,9 @@ fun StudioThumbZoneDock(
                         Text(
                             text = "Import",
                             style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurface
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            softWrap = false
                         )
                     }
                 }
@@ -259,7 +263,7 @@ fun StudioThumbZoneDock(
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .height(64.dp)
+                            .heightIn(min = 64.dp)
                             .scale(padScale)
                             .clip(RoundedCornerShape(18.dp))
                             .background(primaryBrush)
@@ -315,7 +319,7 @@ fun StudioThumbZoneDock(
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            modifier = Modifier.padding(horizontal = 16.dp)
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
                         ) {
                             Box(
                                 modifier = Modifier
@@ -335,25 +339,32 @@ fun StudioThumbZoneDock(
                                     modifier = Modifier.size(22.dp)
                                 )
                             }
-                            Column {
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
                                 Text(
                                     text = when {
-                                        isLive && liveState.isHoldToTalk -> "Streaming Live · Release to Finish"
-                                        isLive -> "Hands-Free Live · Tap to Stop"
-                                        else -> "Hold to Speak · Tap Hands-Free"
+                                        isLive && liveState.isHoldToTalk -> "Streaming Live · Release"
+                                        isLive -> "Hands-Free Live · Tap Stop"
+                                        else -> "Hold to Speak · Tap Lock"
                                     },
                                     style = MaterialTheme.typography.titleSmall,
                                     color = padFg,
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
                                     text = if (isLive) {
                                         "Live Cantonese transcription active"
                                     } else {
-                                        "Zero-wait real-time Cantonese stream"
+                                        "Zero-wait Cantonese stream"
                                     },
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = padFg
+                                    color = padFg.copy(alpha = 0.9f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
@@ -436,6 +447,8 @@ private fun DockQuickChip(
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelLarge,
+                maxLines = 1,
+                softWrap = false,
                 color = if (active) {
                     MaterialTheme.colorScheme.onPrimaryContainer
                 } else {

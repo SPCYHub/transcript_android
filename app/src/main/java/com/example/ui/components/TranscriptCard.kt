@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -61,6 +62,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.core.LocalStudioHaptics
@@ -123,8 +125,10 @@ fun TranscriptResultCard(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.weight(1f)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 10.dp)
                 ) {
                     Box(
                         modifier = Modifier
@@ -140,16 +144,20 @@ fun TranscriptResultCard(
                             modifier = Modifier.size(18.dp)
                         )
                     }
-                    Column {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(
                             text = record.sourceType.label,
                             style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSurface
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
                             text = "${record.codecLabel} · ${formatByteSize(record.audioSizeBytes)}",
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -171,10 +179,12 @@ fun TranscriptResultCard(
                         )
                         val latencyTag = if (record.fromCache) "0ms" else "${record.latencyMillis}ms"
                         Text(
-                            text = "${record.engineUsed.displayName} · $latencyTag",
+                            text = latencyTag,
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            fontWeight = FontWeight.SemiBold
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            softWrap = false
                         )
                     }
                 }
@@ -240,10 +250,13 @@ fun TranscriptResultCard(
                             Box(contentAlignment = Alignment.Center) {
                                 Text(
                                     text = fmt.label,
-                                    style = MaterialTheme.typography.labelLarge,
+                                    style = MaterialTheme.typography.labelLarge.copy(fontSize = 12.sp),
                                     color = tabFg,
                                     fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                    modifier = Modifier.padding(vertical = 8.dp)
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp)
                                 )
                             }
                         }
@@ -314,6 +327,7 @@ fun TranscriptResultCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
+                MetaChip(label = record.engineUsed.displayName)
                 MetaChip(label = record.detectedLanguageMix)
                 if (record.durationMillis > 0L) {
                     MetaChip(label = "Duration ${formatDurationMs(record.durationMillis)}")
@@ -329,6 +343,7 @@ fun TranscriptResultCard(
             ) {
                 OutlinedButton(
                     onClick = { onCopyText(activeText) },
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                     modifier = Modifier
                         .weight(1f)
                         .minimumInteractiveComponentSize()
@@ -341,11 +356,12 @@ fun TranscriptResultCard(
                         modifier = Modifier.size(17.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Copy")
+                    Text("Copy", maxLines = 1, softWrap = false)
                 }
 
                 OutlinedButton(
                     onClick = { onShareText(activeText) },
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                     modifier = Modifier
                         .weight(1f)
                         .minimumInteractiveComponentSize()
@@ -358,7 +374,7 @@ fun TranscriptResultCard(
                         modifier = Modifier.size(17.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Share")
+                    Text("Share", maxLines = 1, softWrap = false)
                 }
             }
 

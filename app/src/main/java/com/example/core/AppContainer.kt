@@ -5,13 +5,16 @@ import com.example.ai.DirectGeminiRestClient
 import com.example.ai.GeminiLiveStreamEngine
 import com.example.ai.GeminiTranscriptionEngine
 import com.example.ai.LiveTranscriptionController
+import com.example.ai.LocalWhisperEngine
 import com.example.ai.OpenAiRealtimeStreamEngine
 import com.example.ai.OpenAiTranscriptionEngine
 import com.example.ai.TranscriptionRouter
 import com.example.audio.AudioInputHandler
+import com.example.audio.AudioPcmDecoder
 import com.example.data.PreferencesRepository
 import com.example.data.SecureKeyStore
 import com.example.data.SessionTranscriptStore
+import com.example.data.WhisperModelStore
 
 /**
  * Lightweight manual dependency graph shared cleanly between MainActivity and CantoVoiceImeService.
@@ -28,10 +31,16 @@ object AppContainer {
     lateinit var secureKeyStore: SecureKeyStore
         private set
 
+    lateinit var whisperModelStore: WhisperModelStore
+        private set
+
     lateinit var sessionStore: SessionTranscriptStore
         private set
 
     lateinit var audioInputHandler: AudioInputHandler
+        private set
+
+    lateinit var audioPcmDecoder: AudioPcmDecoder
         private set
 
     lateinit var directGeminiRestClient: DirectGeminiRestClient
@@ -47,6 +56,9 @@ object AppContainer {
         private set
 
     lateinit var openAiRealtimeEngine: OpenAiRealtimeStreamEngine
+        private set
+
+    lateinit var localWhisperEngine: LocalWhisperEngine
         private set
 
     lateinit var transcriptionRouter: TranscriptionRouter
@@ -65,8 +77,13 @@ object AppContainer {
             val appCtx = context.applicationContext
             preferencesRepository = PreferencesRepository(appCtx)
             secureKeyStore = SecureKeyStore(appCtx)
+            whisperModelStore = WhisperModelStore(
+                appContext = appCtx,
+                preferencesRepository = preferencesRepository
+            )
             sessionStore = SessionTranscriptStore()
             audioInputHandler = AudioInputHandler(appCtx)
+            audioPcmDecoder = AudioPcmDecoder(appCtx)
             directGeminiRestClient = DirectGeminiRestClient()
             geminiEngine = GeminiTranscriptionEngine(
                 keyStore = secureKeyStore,
@@ -75,9 +92,14 @@ object AppContainer {
             geminiLiveEngine = GeminiLiveStreamEngine(keyStore = secureKeyStore)
             openAiEngine = OpenAiTranscriptionEngine(keyStore = secureKeyStore)
             openAiRealtimeEngine = OpenAiRealtimeStreamEngine(keyStore = secureKeyStore)
+            localWhisperEngine = LocalWhisperEngine(
+                modelStore = whisperModelStore,
+                pcmDecoder = audioPcmDecoder
+            )
             transcriptionRouter = TranscriptionRouter(
                 geminiEngine = geminiEngine,
                 openAiEngine = openAiEngine,
+                localWhisperEngine = localWhisperEngine,
                 sessionStore = sessionStore
             )
             liveTranscriptionController = LiveTranscriptionController(
@@ -86,6 +108,7 @@ object AppContainer {
                 geminiLive = geminiLiveEngine,
                 openAiRealtime = openAiRealtimeEngine,
                 openAiRest = openAiEngine,
+                localWhisperEngine = localWhisperEngine,
                 sessionStore = sessionStore
             )
             studioHaptics = AndroidStudioHaptics(appCtx)

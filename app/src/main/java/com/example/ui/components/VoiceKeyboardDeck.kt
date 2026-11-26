@@ -176,7 +176,9 @@ fun VoiceKeyboardDeck(
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(7.dp),
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 8.dp)
                 ) {
                     Box(
                         modifier = Modifier
@@ -389,7 +391,7 @@ fun VoiceKeyboardDeck(
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .height(64.dp)
+                            .heightIn(min = 64.dp)
                             .scale(padScale)
                             .clip(RoundedCornerShape(18.dp))
                             .background(padBrush)
@@ -443,7 +445,7 @@ fun VoiceKeyboardDeck(
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            modifier = Modifier.padding(horizontal = 16.dp)
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
                         ) {
                             Box(
                                 modifier = Modifier
@@ -463,7 +465,10 @@ fun VoiceKeyboardDeck(
                                     modifier = Modifier.size(21.dp)
                                 )
                             }
-                            Column {
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
                                 Text(
                                     text = when {
                                         isStreaming && sandboxState.isHoldToTalk -> "Live Streaming · Release"
@@ -473,7 +478,8 @@ fun VoiceKeyboardDeck(
                                     style = MaterialTheme.typography.titleSmall,
                                     color = padFg,
                                     fontWeight = FontWeight.Bold,
-                                    maxLines = 1
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
                                     text = if (isStreaming) {
@@ -482,8 +488,9 @@ fun VoiceKeyboardDeck(
                                         "Zero-wait 粵語 voice keyboard deck"
                                     },
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = padFg,
-                                    maxLines = 1
+                                    color = padFg.copy(alpha = 0.9f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
@@ -569,7 +576,9 @@ fun VoiceKeyboardDeck(
                         Text(
                             text = "空格 · Space",
                             style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            softWrap = false
                         )
                     }
                 }
@@ -705,6 +714,8 @@ private fun KeyboardControlChip(
             text = label,
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            softWrap = false,
             color = if (highlighted) {
                 MaterialTheme.colorScheme.onPrimaryContainer
             } else {
@@ -741,7 +752,10 @@ private fun KeyboardKeycap(
             .clip(RoundedCornerShape(10.dp))
             .clickable(enabled = enabled, onClick = onClick)
     ) {
-        Box(contentAlignment = Alignment.Center) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.padding(horizontal = 3.dp)
+        ) {
             Text(
                 text = label,
                 style = if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.titleSmall,
@@ -751,7 +765,9 @@ private fun KeyboardKeycap(
                     accent -> MaterialTheme.colorScheme.onPrimaryContainer
                     else -> MaterialTheme.colorScheme.onSurface
                 },
-                maxLines = 1
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }

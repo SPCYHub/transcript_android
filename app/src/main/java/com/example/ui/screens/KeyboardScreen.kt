@@ -12,6 +12,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -60,6 +61,7 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -133,17 +135,26 @@ fun KeyboardScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
                     Text(
                         text = "SYSTEM VOICE KEYBOARD",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         text = "Cantonese Voice IME",
                         style = MaterialTheme.typography.headlineMedium,
                         color = MaterialTheme.colorScheme.onBackground,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.semantics { heading() }
                     )
                 }
@@ -180,7 +191,9 @@ fun KeyboardScreen(
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             },
-                            fontWeight = FontWeight.SemiBold
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            softWrap = false
                         )
                     }
                 }
@@ -205,7 +218,10 @@ fun KeyboardScreen(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 10.dp)
                         ) {
                             Box(
                                 modifier = Modifier
@@ -225,12 +241,16 @@ fun KeyboardScreen(
                                 Text(
                                     text = "Type in Any App",
                                     style = MaterialTheme.typography.titleMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.semantics { heading() }
                                 )
                                 Text(
                                     text = "WhatsApp, Notes, Signal, Chrome",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
@@ -250,7 +270,7 @@ fun KeyboardScreen(
                             }
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
@@ -266,6 +286,8 @@ fun KeyboardScreen(
                                     text = statusLabel,
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    softWrap = false,
                                     color = if (statusHighlighted) {
                                         MaterialTheme.colorScheme.onPrimaryContainer
                                     } else {
@@ -288,6 +310,7 @@ fun KeyboardScreen(
                                 }
                                 context.startActivity(intent)
                             },
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .minimumInteractiveComponentSize()
@@ -300,7 +323,7 @@ fun KeyboardScreen(
                                 modifier = Modifier.size(17.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("1. Enable")
+                            Text("1. Enable", maxLines = 1, softWrap = false)
                         }
 
                         OutlinedButton(
@@ -308,6 +331,7 @@ fun KeyboardScreen(
                                 haptics.tick()
                                 openImePicker()
                             },
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .minimumInteractiveComponentSize()
@@ -320,7 +344,7 @@ fun KeyboardScreen(
                                 modifier = Modifier.size(17.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("2. Switch")
+                            Text("2. Switch", maxLines = 1, softWrap = false)
                         }
                     }
                 }
@@ -421,6 +445,7 @@ fun KeyboardScreen(
                                 onUndoSandbox()
                             },
                             enabled = sandboxState.lastInsertedLength > 0,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .minimumInteractiveComponentSize()
@@ -433,7 +458,7 @@ fun KeyboardScreen(
                                 modifier = Modifier.size(15.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Undo")
+                            Text("Undo", maxLines = 1, softWrap = false)
                         }
                         OutlinedButton(
                             onClick = {
@@ -441,6 +466,7 @@ fun KeyboardScreen(
                                 onCopySandbox(sandboxState.text)
                             },
                             enabled = sandboxState.text.isNotBlank(),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .minimumInteractiveComponentSize()
@@ -453,7 +479,7 @@ fun KeyboardScreen(
                                 modifier = Modifier.size(15.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Copy")
+                            Text("Copy", maxLines = 1, softWrap = false)
                         }
                         OutlinedButton(
                             onClick = {
@@ -461,6 +487,7 @@ fun KeyboardScreen(
                                 onClearSandbox()
                             },
                             enabled = sandboxState.text.isNotBlank(),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .minimumInteractiveComponentSize()
@@ -473,7 +500,7 @@ fun KeyboardScreen(
                                 modifier = Modifier.size(15.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Clear")
+                            Text("Clear", maxLines = 1, softWrap = false)
                         }
                     }
                 }
@@ -489,7 +516,8 @@ fun KeyboardScreen(
                     val next = when (preferences.routingMode) {
                         RoutingMode.AUTO -> RoutingMode.GEMINI_ONLY
                         RoutingMode.GEMINI_ONLY -> RoutingMode.OPENAI_ONLY
-                        RoutingMode.OPENAI_ONLY -> RoutingMode.AUTO
+                        RoutingMode.OPENAI_ONLY -> RoutingMode.LOCAL_ONLY
+                        RoutingMode.LOCAL_ONLY -> RoutingMode.AUTO
                     }
                     onSelectRoutingMode(next)
                 },

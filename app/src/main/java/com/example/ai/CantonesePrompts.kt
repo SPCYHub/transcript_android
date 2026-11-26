@@ -41,6 +41,31 @@ object CantonesePrompts {
         }
     }
 
+    /**
+     * Builds a non-instructional Traditional Hong Kong Cantonese primer for Whisper `initial_prompt`.
+     * Anchors the decoder on authentic HK Cantonese characters (係、唔、嘅、咗、喺、啲) without using
+     * imperative sentences that could echo verbatim on silence.
+     */
+    fun buildLocalWhisperPrompt(
+        customGlossary: String,
+        contextTail: String = ""
+    ): String {
+        val primer = "香港廣東話口語，用繁體字：係、唔、嘅、咗、喺、啲。"
+        val cleanGlossary = customGlossary
+            .split(',', '，', '、', '\n', ';', '；')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .joinToString("、")
+        val cleanTail = contextTail.trim().takeLast(60)
+
+        return buildList {
+            add(primer)
+            if (cleanGlossary.isNotEmpty()) add(cleanGlossary)
+            if (cleanTail.isNotEmpty()) add(cleanTail)
+        }.joinToString(" ")
+    }
+
     fun buildGeminiAudioSystemInstruction(
         includeWritten: Boolean,
         customGlossary: String

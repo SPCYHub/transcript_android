@@ -58,6 +58,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.core.LocalStudioHaptics
 import com.example.model.ApiKeyStatus
@@ -316,6 +317,7 @@ fun LiveWaveformVisualizer(
 fun EngineSelectorPillBar(
     selectedMode: RoutingMode,
     apiKeyStatus: ApiKeyStatus,
+    isLocalModelReady: Boolean = false,
     onSelectMode: (RoutingMode) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -331,7 +333,7 @@ fun EngineSelectorPillBar(
             modifier = Modifier
                 .padding(4.dp)
                 .selectableGroup(),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             RoutingMode.entries.forEach { mode ->
@@ -358,6 +360,11 @@ fun EngineSelectorPillBar(
                         MaterialTheme.colorScheme.tertiary
                     }
                     RoutingMode.OPENAI_ONLY -> if (apiKeyStatus.isOpenAiConfigured) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.tertiary
+                    }
+                    RoutingMode.LOCAL_ONLY -> if (isLocalModelReady) {
                         MaterialTheme.colorScheme.primary
                     } else {
                         MaterialTheme.colorScheme.tertiary
@@ -389,7 +396,7 @@ fun EngineSelectorPillBar(
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp)
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 10.dp)
                     ) {
                         if (indicatorColor != null) {
                             Box(
@@ -398,13 +405,16 @@ fun EngineSelectorPillBar(
                                     .clip(CircleShape)
                                     .background(indicatorColor)
                             )
-                            Spacer(modifier = Modifier.width(6.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
                         }
                         Text(
                             text = mode.label,
-                            style = MaterialTheme.typography.labelLarge,
+                            style = MaterialTheme.typography.labelMedium,
                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                            color = labelColor
+                            color = labelColor,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }

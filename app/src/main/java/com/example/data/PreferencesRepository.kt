@@ -32,6 +32,7 @@ class PreferencesRepository(private val appContext: Context) {
         val HAPTICS_ENABLED = booleanPreferencesKey("haptics_enabled")
         val CUSTOM_GLOSSARY = stringPreferencesKey("custom_glossary")
         val THEME_PREFERENCE = stringPreferencesKey("theme_preference")
+        val ACTIVE_WHISPER_MODEL_ID = stringPreferencesKey("active_whisper_model_id")
     }
 
     val preferencesFlow: Flow<UserPreferences> = appContext.cantoPrefsDataStore.data
@@ -56,7 +57,8 @@ class PreferencesRepository(private val appContext: Context) {
                 customGlossary = prefs[Keys.CUSTOM_GLOSSARY].orEmpty(),
                 themePreference = prefs[Keys.THEME_PREFERENCE]
                     ?.let { runCatching { ThemePreference.valueOf(it) }.getOrNull() }
-                    ?: ThemePreference.SYSTEM
+                    ?: ThemePreference.SYSTEM,
+                activeWhisperModelId = prefs[Keys.ACTIVE_WHISPER_MODEL_ID]?.takeIf { it.isNotBlank() }
             )
         }
 
@@ -88,5 +90,15 @@ class PreferencesRepository(private val appContext: Context) {
 
     suspend fun setThemePreference(theme: ThemePreference) {
         appContext.cantoPrefsDataStore.edit { it[Keys.THEME_PREFERENCE] = theme.name }
+    }
+
+    suspend fun setActiveWhisperModelId(modelId: String?) {
+        appContext.cantoPrefsDataStore.edit { prefs ->
+            if (modelId.isNullOrBlank()) {
+                prefs.remove(Keys.ACTIVE_WHISPER_MODEL_ID)
+            } else {
+                prefs[Keys.ACTIVE_WHISPER_MODEL_ID] = modelId
+            }
+        }
     }
 }

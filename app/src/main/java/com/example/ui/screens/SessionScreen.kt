@@ -147,16 +147,25 @@ fun SessionScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
                     Text(
                         text = "EPHEMERAL MEMORY",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         text = "Session History",
                         style = MaterialTheme.typography.headlineMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.semantics { heading() }
                     )
                 }
@@ -167,6 +176,7 @@ fun SessionScreen(
                             haptics.tick()
                             showClearConfirm = true
                         },
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                         modifier = Modifier
                             .minimumInteractiveComponentSize()
                             .testTag("clear_session_button"),
@@ -178,7 +188,7 @@ fun SessionScreen(
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Clear")
+                        Text("Clear", maxLines = 1, softWrap = false)
                     }
                 }
             }
@@ -197,7 +207,9 @@ fun SessionScreen(
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 8.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Outlined.Shield,
@@ -208,7 +220,9 @@ fun SessionScreen(
                         Text(
                             text = "In-memory only · Clears when app closes",
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                     if (records.isNotEmpty()) {
@@ -216,7 +230,9 @@ fun SessionScreen(
                             text = "${records.size} clips · ${avgLatencyMs}ms avg",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.SemiBold
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            softWrap = false
                         )
                     }
                 }
@@ -306,7 +322,10 @@ private fun SessionRecordRow(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 8.dp)
                 ) {
                     Box(
                         modifier = Modifier
@@ -325,7 +344,9 @@ private fun SessionRecordRow(
                     Text(
                         text = record.sourceType.label,
                         style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     if (record.deepReview != null) {
                         Icon(
@@ -339,7 +360,9 @@ private fun SessionRecordRow(
                 Text(
                     text = "$timeLabel · ${record.engineUsed.displayName}",
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false
                 )
             }
 
@@ -359,7 +382,12 @@ private fun SessionRecordRow(
                 Text(
                     text = "${record.codecLabel} · ${formatByteSize(record.audioSizeBytes)} · ${record.latencyMillis}ms",
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 8.dp)
                 )
 
                 Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {

@@ -10,6 +10,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -70,12 +71,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.core.LocalStudioHaptics
 import com.example.model.ApiKeyStatus
 import com.example.model.KeyTestResult
 import com.example.model.ThemePreference
 import com.example.model.UserPreferences
+import com.example.model.WhisperManagerState
+import com.example.ui.components.WhisperModelManagerCard
 import com.example.ui.components.rememberReduceMotionEnabled
 
 @Composable
@@ -84,6 +88,7 @@ fun SettingsScreen(
     geminiKeyTest: KeyTestResult,
     openAiKeyTest: KeyTestResult,
     preferences: UserPreferences,
+    whisperManagerState: WhisperManagerState,
     onSaveGeminiKey: (String) -> Unit,
     onClearGeminiKey: () -> Unit,
     onToggleUsePersonalGemini: (Boolean) -> Unit,
@@ -92,6 +97,12 @@ fun SettingsScreen(
     onSaveOpenAiKey: (String) -> Unit,
     onClearOpenAiKey: () -> Unit,
     onTestOpenAiKey: (String?) -> Unit,
+    onDownloadWhisperModel: (String) -> Unit,
+    onCancelWhisperDownload: (String) -> Unit,
+    onSelectWhisperModel: (String) -> Unit,
+    onDeleteWhisperModel: (String) -> Unit,
+    onImportWhisperModel: () -> Unit,
+    onDismissWhisperBanner: () -> Unit,
     onSelectTheme: (ThemePreference) -> Unit,
     onToggleHaptics: (Boolean) -> Unit,
     onToggleAutoCopy: (Boolean) -> Unit,
@@ -161,14 +172,25 @@ fun SettingsScreen(
                         modifier = Modifier.size(18.dp)
                     )
                     Text(
-                        text = "Keys are encrypted locally with Android Keystore (AES-256-GCM), excluded from cloud backups, and sent only via api-router.alchemys.ai to Google Gemini or OpenAI.",
+                        text = "Keys are encrypted locally with Android Keystore (AES-256-GCM), excluded from cloud backups, and sent only via api-router.alchemys.ai to Google Gemini or OpenAI. Local Whisper models run 100% offline on device.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onPrimaryContainer
                     )
                 }
             }
 
-            // 1. Gemini Personal API Key Card
+            // 1. Local Offline Whisper Model Manager
+            WhisperModelManagerCard(
+                state = whisperManagerState,
+                onDownloadModel = onDownloadWhisperModel,
+                onCancelDownload = onCancelWhisperDownload,
+                onSelectModel = onSelectWhisperModel,
+                onDeleteModel = onDeleteWhisperModel,
+                onImportCustomModel = onImportWhisperModel,
+                onDismissBanner = onDismissWhisperBanner
+            )
+
+            // 2. Gemini Personal API Key Card
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(24.dp),
@@ -187,7 +209,10 @@ fun SettingsScreen(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 8.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.AutoAwesome,
@@ -198,6 +223,8 @@ fun SettingsScreen(
                             Text(
                                 text = "Gemini API Key",
                                 style = MaterialTheme.typography.titleMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.semantics { heading() }
                             )
                         }
@@ -270,13 +297,14 @@ fun SettingsScreen(
                                 geminiDraft = ""
                             },
                             enabled = geminiDraft.isNotBlank(),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .minimumInteractiveComponentSize()
                                 .testTag("save_gemini_key_button"),
                             shape = RoundedCornerShape(12.dp)
                         ) {
-                            Text("Save Key")
+                            Text("Save Key", maxLines = 1, softWrap = false)
                         }
                         OutlinedButton(
                             onClick = {
@@ -284,13 +312,14 @@ fun SettingsScreen(
                                 onTestGeminiKey(geminiDraft.takeIf { it.isNotBlank() })
                             },
                             enabled = geminiDraft.isNotBlank() || apiKeyStatus.hasUserGeminiKey,
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .minimumInteractiveComponentSize()
                                 .testTag("test_gemini_key_button"),
                             shape = RoundedCornerShape(12.dp)
                         ) {
-                            Text("Verify")
+                            Text("Verify", maxLines = 1, softWrap = false)
                         }
                     }
 
@@ -323,12 +352,13 @@ fun SettingsScreen(
                                         haptics.confirm()
                                         onSaveCustomGeminiModel(modelDraft)
                                     },
+                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
                                     modifier = Modifier
                                         .minimumInteractiveComponentSize()
                                         .testTag("save_custom_model_button"),
                                     shape = RoundedCornerShape(12.dp)
                                 ) {
-                                    Text("Apply")
+                                    Text("Apply", maxLines = 1, softWrap = false)
                                 }
                             }
                         }
@@ -355,7 +385,10 @@ fun SettingsScreen(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 8.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.Key,
@@ -366,6 +399,8 @@ fun SettingsScreen(
                             Text(
                                 text = "OpenAI API Key",
                                 style = MaterialTheme.typography.titleMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.semantics { heading() }
                             )
                         }
@@ -438,13 +473,14 @@ fun SettingsScreen(
                                 openAiDraft = ""
                             },
                             enabled = openAiDraft.isNotBlank(),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .minimumInteractiveComponentSize()
                                 .testTag("save_openai_key_button"),
                             shape = RoundedCornerShape(12.dp)
                         ) {
-                            Text("Save Key")
+                            Text("Save Key", maxLines = 1, softWrap = false)
                         }
                         OutlinedButton(
                             onClick = {
@@ -452,13 +488,14 @@ fun SettingsScreen(
                                 onTestOpenAiKey(openAiDraft.takeIf { it.isNotBlank() })
                             },
                             enabled = openAiDraft.isNotBlank() || apiKeyStatus.isOpenAiConfigured,
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .minimumInteractiveComponentSize()
                                 .testTag("test_openai_key_button"),
                             shape = RoundedCornerShape(12.dp)
                         ) {
-                            Text("Verify")
+                            Text("Verify", maxLines = 1, softWrap = false)
                         }
                     }
 
@@ -575,7 +612,9 @@ fun SettingsScreen(
                                             style = MaterialTheme.typography.labelLarge,
                                             color = tabFg,
                                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                            modifier = Modifier.padding(vertical = 8.dp)
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp)
                                         )
                                     }
                                 }
@@ -739,6 +778,8 @@ private fun StatusBadge(label: String, highlighted: Boolean) {
                 MaterialTheme.colorScheme.onSurfaceVariant
             },
             fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            softWrap = false,
             modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
         )
     }
@@ -763,7 +804,10 @@ private fun SavedKeyPill(
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 8.dp)
             ) {
                 Icon(
                     imageVector = Icons.Outlined.VerifiedUser,
@@ -774,7 +818,9 @@ private fun SavedKeyPill(
                 Text(
                     text = maskedKey,
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurface
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
             IconButton(

@@ -300,7 +300,8 @@ class CantoVoiceImeService : InputMethodService() {
             val next = when (routingMode) {
                 RoutingMode.AUTO -> RoutingMode.GEMINI_ONLY
                 RoutingMode.GEMINI_ONLY -> RoutingMode.OPENAI_ONLY
-                RoutingMode.OPENAI_ONLY -> RoutingMode.AUTO
+                RoutingMode.OPENAI_ONLY -> RoutingMode.LOCAL_ONLY
+                RoutingMode.LOCAL_ONLY -> RoutingMode.AUTO
             }
             routingMode = next
             imeScope.launch { AppContainer.preferencesRepository.setRoutingMode(next) }
@@ -956,6 +957,7 @@ class CantoVoiceImeService : InputMethodService() {
             RoutingMode.AUTO -> "Auto"
             RoutingMode.GEMINI_ONLY -> "Gemini"
             RoutingMode.OPENAI_ONLY -> "OpenAI"
+            RoutingMode.LOCAL_ONLY -> "Local"
         }
         engineChip?.apply {
             text = engineLabel

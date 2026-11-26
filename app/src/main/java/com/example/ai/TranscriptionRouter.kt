@@ -9,19 +9,27 @@ import com.example.model.RoutingMode
 import com.example.model.TranscriptRecord
 import com.example.model.UserPreferences
 
+import java.io.IOException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import javax.net.ssl.SSLException
+
 /**
  * Efficiency-first transcription coordinator routing across the user's saved Gemini API
- * (`api-router.alchemys.ai/gemini`) and OpenAI (`api-router.alchemys.ai/openai`) keys.
+ * (`api-router.alchemys.ai/gemini`), OpenAI (`api-router.alchemys.ai/openai`), and
+ * on-device Local Whisper GGML models.
  *
  * Optimization highlights:
  * - Instant 0ms SHA-256 session deduplication cache.
  * - Pre-flight VAD silence check to avoid empty API round trips.
- * - Smart Auto-Routing based on whichever personal API keys the user has saved, with transparent
- *   cross-engine failover when both keys are configured.
+ * - Smart Auto-Routing with automatic offline fallback to Local Whisper when keys are unset
+ *   or cloud endpoints fail with connectivity/timeout/server errors.
  */
 class TranscriptionRouter(
     private val geminiEngine: GeminiTranscriptionEngine,
     private val openAiEngine: OpenAiTranscriptionEngine,
+    private val localWhisperEngine: LocalWhisperEngine,
     private val sessionStore: SessionTranscriptStore
 ) {
 
@@ -31,24 +39,27 @@ class TranscriptionRouter(
     val isOpenAiReady: Boolean
         get() = openAiEngine.isConfigured
 
+    val isLocalReady: Boolean
+        get() = localWhisperEngine.isConfigured
+
     fun resolvePlannedEngineHint(
         sourceType: AudioSourceType,
         routingMode: RoutingMode
     ): String {
+        val localLabel = localWhisperEngine.activeModelShortName ?: "GGML"
         return when (routingMode) {
             RoutingMode.GEMINI_ONLY ->
-                if (isGeminiReady) {
-                    if (sourceType == AudioSourceType.KEYBOARD_LIVE) "Gemini 4 Hydrogen / 3.8 Flash" else "Gemini 4 Hydrogen / 3.8 Flash"
-                } else {
-                    "Gemini (Key Needed)"
-                }
+                if (isGeminiReady) "Gemini 4 Hydrogen / 3.8 Flash" else "Gemini (Key Needed)"
             RoutingMode.OPENAI_ONLY ->
                 if (isOpenAiReady) "OpenAI gpt-transcribe" else "OpenAI (Key Needed)"
+            RoutingMode.LOCAL_ONLY ->
+                if (isLocalReady) "Whisper Local ($localLabel)" else "Local Model Needed (Keys Tab)"
             RoutingMode.AUTO -> when {
                 sourceType == AudioSourceType.KEYBOARD_LIVE && isOpenAiReady -> "Auto -> OpenAI gpt-transcribe"
                 isGeminiReady -> "Auto -> Gemini 4 Hydrogen / 3.8 Flash"
                 isOpenAiReady -> "Auto -> OpenAI gpt-transcribe"
-                else -> "API Key Needed (Keys Tab)"
+                isLocalReady -> "Auto -> Whisper Local ($localLabel)"
+                else -> "Key or Local Model Needed (Keys Tab)"
             }
         }
     }
@@ -82,6 +93,7 @@ class TranscriptionRouter(
         val result: Result<TranscriptRecord> = when (activeMode) {
             RoutingMode.GEMINI_ONLY -> runGemini(audio, preferences, fallbackNote = null)
             RoutingMode.OPENAI_ONLY -> runOpenAi(audio, preferences, fallbackNote = null)
+            RoutingMode.LOCAL_ONLY -> runLocalWhisper(audio, preferences, fallbackNote = null)
             RoutingMode.AUTO -> runSmartAuto(audio, preferences)
         }
 
@@ -99,6 +111,11 @@ class TranscriptionRouter(
     ): Result<TranscriptRecord> {
         if (!record.writtenChinese.isNullOrBlank()) {
             return Result.success(record)
+        }
+        if (!isGeminiReady && !isOpenAiReady) {
+            return Result.failure(
+                IllegalStateException("Online Written Chinese conversion requires a Gemini or OpenAI API key.")
+            )
         }
         val preferOpenAi = routingMode == RoutingMode.OPENAI_ONLY || (!isGeminiReady && isOpenAiReady)
         val conversionResult = if (preferOpenAi) {
@@ -129,6 +146,11 @@ class TranscriptionRouter(
         customGlossary: String,
         routingMode: RoutingMode = RoutingMode.AUTO
     ): Result<Pair<TranscriptRecord, DeepReviewResult>> {
+        if (!isGeminiReady && !isOpenAiReady) {
+            return Result.failure(
+                IllegalStateException("Deep Review requires a Gemini or OpenAI API key in the Keys tab.")
+            )
+        }
         val preferOpenAi = routingMode == RoutingMode.OPENAI_ONLY || (!isGeminiReady && isOpenAiReady)
         val reviewResult = if (preferOpenAi) {
             val openAiRes = openAiEngine.deepReview(
@@ -179,9 +201,12 @@ class TranscriptionRouter(
         preferences: UserPreferences
     ): Result<TranscriptRecord> {
         if (!isGeminiReady && !isOpenAiReady) {
+            if (isLocalReady) {
+                return runLocalWhisper(audio, preferences, fallbackNote = null)
+            }
             return Result.failure(
                 IllegalStateException(
-                    "No API key configured. Add your Gemini or OpenAI API key in the Keys tab."
+                    "No API key or local Whisper model configured. Add a key or download a Local Whisper model in the Keys tab."
                 )
             )
         }
@@ -192,14 +217,36 @@ class TranscriptionRouter(
         // Short live keyboard bursts use OpenAI when configured, or route straight to OpenAI if Gemini key isn't set.
         if ((isShortKeyboardBurst && isOpenAiReady) || (!isGeminiReady && isOpenAiReady)) {
             val openAiResult = runOpenAi(audio, preferences, fallbackNote = null)
-            if (openAiResult.isSuccess || !isGeminiReady) return openAiResult
+            if (openAiResult.isSuccess) return openAiResult
 
-            val err = openAiResult.exceptionOrNull()?.message ?: "OpenAI unavailable"
-            return runGemini(
-                audio = audio,
-                preferences = preferences,
-                fallbackNote = "Auto fallback to Gemini ($err)"
-            )
+            if (isGeminiReady) {
+                val err = openAiResult.exceptionOrNull()?.message ?: "OpenAI unavailable"
+                val geminiRes = runGemini(
+                    audio = audio,
+                    preferences = preferences,
+                    fallbackNote = "Auto fallback to Gemini ($err)"
+                )
+                if (geminiRes.isSuccess) return geminiRes
+                if (isLocalReady && isConnectivityOrServerFailure(geminiRes.exceptionOrNull())) {
+                    val localLabel = localWhisperEngine.activeModelShortName ?: "GGML"
+                    return runLocalWhisper(
+                        audio = audio,
+                        preferences = preferences,
+                        fallbackNote = "Offline fallback · Local Whisper ($localLabel)"
+                    )
+                }
+                return geminiRes
+            }
+
+            if (isLocalReady && isConnectivityOrServerFailure(openAiResult.exceptionOrNull())) {
+                val localLabel = localWhisperEngine.activeModelShortName ?: "GGML"
+                return runLocalWhisper(
+                    audio = audio,
+                    preferences = preferences,
+                    fallbackNote = "Offline fallback · Local Whisper ($localLabel)"
+                )
+            }
+            return openAiResult
         }
 
         // WhatsApp shares, studio recordings, and long files route to Direct Gemini API first.
@@ -209,10 +256,29 @@ class TranscriptionRouter(
         // Automatic fallback to OpenAI if configured.
         if (isOpenAiReady) {
             val err = geminiResult.exceptionOrNull()?.message ?: "Gemini unavailable"
-            return runOpenAi(
+            val openAiRes = runOpenAi(
                 audio = audio,
                 preferences = preferences,
                 fallbackNote = "Auto fallback to OpenAI ($err)"
+            )
+            if (openAiRes.isSuccess) return openAiRes
+            if (isLocalReady && isConnectivityOrServerFailure(openAiRes.exceptionOrNull())) {
+                val localLabel = localWhisperEngine.activeModelShortName ?: "GGML"
+                return runLocalWhisper(
+                    audio = audio,
+                    preferences = preferences,
+                    fallbackNote = "Offline fallback · Local Whisper ($localLabel)"
+                )
+            }
+            return openAiRes
+        }
+
+        if (isLocalReady && isConnectivityOrServerFailure(geminiResult.exceptionOrNull())) {
+            val localLabel = localWhisperEngine.activeModelShortName ?: "GGML"
+            return runLocalWhisper(
+                audio = audio,
+                preferences = preferences,
+                fallbackNote = "Offline fallback · Local Whisper ($localLabel)"
             )
         }
         return geminiResult
@@ -280,5 +346,64 @@ class TranscriptionRouter(
                 fallbackNote = fallbackNote
             )
         }
+    }
+
+    private suspend fun runLocalWhisper(
+        audio: PreparedAudio,
+        preferences: UserPreferences,
+        fallbackNote: String?
+    ): Result<TranscriptRecord> {
+        return localWhisperEngine.transcribePreparedAudio(
+            audio = audio,
+            customGlossary = preferences.customGlossary
+        ).map { out ->
+            TranscriptRecord(
+                sourceType = audio.sourceType,
+                fileName = audio.fileName,
+                codecLabel = audio.codecLabel,
+                durationMillis = audio.durationMillis,
+                audioSizeBytes = audio.sizeBytes,
+                audioSha256 = audio.sha256,
+                spokenCantonese = out.spokenCantonese,
+                writtenChinese = null,
+                detectedLanguageMix = out.detectedLanguageMix,
+                engineUsed = out.engineId,
+                latencyMillis = out.latencyMillis,
+                fallbackNote = fallbackNote
+            )
+        }
+    }
+
+    private fun isConnectivityOrServerFailure(error: Throwable?): Boolean {
+        if (error == null) return false
+        var cursor: Throwable? = error
+        while (cursor != null) {
+            if (cursor is UnknownHostException ||
+                cursor is ConnectException ||
+                cursor is SocketTimeoutException ||
+                cursor is SSLException ||
+                cursor is IOException
+            ) {
+                return true
+            }
+            cursor = cursor.cause
+        }
+        val msg = error.message.orEmpty().lowercase()
+        val isAuthFailure = msg.contains("401") ||
+            msg.contains("403") ||
+            msg.contains("invalid_api_key") ||
+            msg.contains("api key not valid")
+        if (isAuthFailure) return false
+
+        return msg.contains("unable to resolve host") ||
+            msg.contains("failed to connect") ||
+            msg.contains("network") ||
+            msg.contains("offline") ||
+            msg.contains("timeout") ||
+            msg.contains("timed out") ||
+            msg.contains("(500)") ||
+            msg.contains("(502)") ||
+            msg.contains("(503)") ||
+            msg.contains("(504)")
     }
 }

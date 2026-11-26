@@ -48,6 +48,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.core.LocalStudioHaptics
 import com.example.model.ApiKeyStatus
@@ -55,6 +56,7 @@ import com.example.model.CantoneseFormat
 import com.example.model.RoutingMode
 import com.example.model.StudioUiState
 import com.example.model.UserPreferences
+import com.example.model.WhisperManagerState
 import com.example.ui.components.AmbientAcousticEmblem
 import com.example.ui.components.EngineSelectorPillBar
 import com.example.ui.components.ErrorRecoveryCard
@@ -70,6 +72,7 @@ fun StudioScreen(
     preferences: UserPreferences,
     displayFormat: CantoneseFormat,
     apiKeyStatus: ApiKeyStatus,
+    whisperManagerState: WhisperManagerState,
     hasMicPermission: Boolean,
     onRequestMicPermission: () -> Unit,
     onSelectRoutingMode: (RoutingMode) -> Unit,
@@ -110,11 +113,13 @@ fun StudioScreen(
                 ) {
                     StudioHeader(
                         apiKeyStatus = apiKeyStatus,
+                        whisperManagerState = whisperManagerState,
                         onOpenKeysTab = onOpenKeysTab
                     )
                     EngineSelectorPillBar(
                         selectedMode = preferences.routingMode,
                         apiKeyStatus = apiKeyStatus,
+                        isLocalModelReady = whisperManagerState.hasInstalledModel,
                         onSelectMode = onSelectRoutingMode
                     )
                     StudioThumbZoneDock(
@@ -177,12 +182,14 @@ fun StudioScreen(
                 ) {
                     StudioHeader(
                         apiKeyStatus = apiKeyStatus,
+                        whisperManagerState = whisperManagerState,
                         onOpenKeysTab = onOpenKeysTab
                     )
 
                     EngineSelectorPillBar(
                         selectedMode = preferences.routingMode,
                         apiKeyStatus = apiKeyStatus,
+                        isLocalModelReady = whisperManagerState.hasInstalledModel,
                         onSelectMode = onSelectRoutingMode
                     )
 
@@ -232,6 +239,7 @@ fun StudioScreen(
 @Composable
 private fun StudioHeader(
     apiKeyStatus: ApiKeyStatus,
+    whisperManagerState: WhisperManagerState,
     onOpenKeysTab: () -> Unit
 ) {
     Row(
@@ -239,26 +247,41 @@ private fun StudioHeader(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
             Text(
                 text = "CANTOSCRIBE · 粵語轉錄",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
             Text(
                 text = "Voice Studio",
                 style = MaterialTheme.typography.headlineMedium,
                 color = MaterialTheme.colorScheme.onBackground,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.semantics { heading() }
             )
         }
 
+        val hasCloud = apiKeyStatus.isUsingDirectGemini || apiKeyStatus.isOpenAiConfigured
+        val hasLocal = whisperManagerState.hasInstalledModel
         val statusLabel = when {
+            apiKeyStatus.isUsingDirectGemini && apiKeyStatus.isOpenAiConfigured && hasLocal -> "Dual + Local"
             apiKeyStatus.isUsingDirectGemini && apiKeyStatus.isOpenAiConfigured -> "Dual Keys"
+            apiKeyStatus.isUsingDirectGemini && hasLocal -> "Gemini + Local"
+            apiKeyStatus.isOpenAiConfigured && hasLocal -> "OpenAI + Local"
             apiKeyStatus.isUsingDirectGemini -> "Gemini Key"
             apiKeyStatus.isOpenAiConfigured -> "OpenAI Key"
-            else -> "Add API Key"
+            hasLocal -> "Local · ${whisperManagerState.activeModelName ?: "GGML"}"
+            else -> "Keys & Models"
         }
 
         val haptics = LocalStudioHaptics.current
@@ -271,7 +294,7 @@ private fun StudioHeader(
                 .clip(RoundedCornerShape(14.dp))
                 .semantics(mergeDescendants = true) {
                     role = Role.Button
-                    contentDescription = "Manage API Keys, $statusLabel"
+                    contentDescription = "Manage API Keys and Local Models, $statusLabel"
                 }
                 .clickable {
                     haptics.tick()
@@ -294,7 +317,9 @@ private fun StudioHeader(
                     text = statusLabel,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurface,
-                    fontWeight = FontWeight.SemiBold
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    softWrap = false
                 )
                 Icon(
                     imageVector = Icons.Filled.Key,
@@ -452,8 +477,8 @@ private fun StudioIdleHeroStage(
             )
             QuickActionTile(
                 icon = Icons.Filled.Key,
-                title = "API Keys",
-                subtitle = "Bring own key",
+                title = "Keys & Models",
+                subtitle = "Cloud or Local",
                 onClick = onOpenKeysTab,
                 modifier = Modifier
                     .weight(1f)
@@ -536,12 +561,16 @@ private fun QuickActionTile(
             Text(
                 text = title,
                 style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurface
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }

@@ -14,6 +14,7 @@ import com.example.core.StudioHaptics
 import com.example.data.PreferencesRepository
 import com.example.data.SecureKeyStore
 import com.example.data.SessionTranscriptStore
+import com.example.data.WhisperModelStore
 import com.example.model.ApiKeyStatus
 import com.example.model.AudioSourceType
 import com.example.model.CantoneseFormat
@@ -24,6 +25,7 @@ import com.example.model.StudioUiState
 import com.example.model.ThemePreference
 import com.example.model.TranscriptRecord
 import com.example.model.UserPreferences
+import com.example.model.WhisperManagerState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -54,6 +56,7 @@ class StudioViewModel(
     private val liveController: LiveTranscriptionController = AppContainer.liveTranscriptionController,
     private val preferencesRepo: PreferencesRepository = AppContainer.preferencesRepository,
     private val keyStore: SecureKeyStore = AppContainer.secureKeyStore,
+    private val whisperModelStore: WhisperModelStore = AppContainer.whisperModelStore,
     private val sessionStore: SessionTranscriptStore = AppContainer.sessionStore,
     private val haptics: StudioHaptics = AppContainer.studioHaptics
 ) : ViewModel() {
@@ -65,6 +68,8 @@ class StudioViewModel(
     )
 
     val apiKeyStatus: StateFlow<ApiKeyStatus> = keyStore.status
+
+    val whisperManagerState: StateFlow<WhisperManagerState> = whisperModelStore.state
 
     val sessionRecords: StateFlow<List<TranscriptRecord>> = sessionStore.records
 
@@ -233,6 +238,50 @@ class StudioViewModel(
         }
     }
 
+    // --- Local Offline Whisper GGML Model Management ---
+
+    fun downloadWhisperModel(modelId: String) {
+        whisperModelStore.downloadModel(modelId)
+    }
+
+    fun cancelWhisperDownload(modelId: String) {
+        whisperModelStore.cancelDownload(modelId)
+    }
+
+    fun selectWhisperModel(modelId: String) {
+        viewModelScope.launch {
+            whisperModelStore.selectModel(modelId).onFailure { err ->
+                _snackbarMessage.value = err.message ?: "Unable to activate model"
+            }
+        }
+    }
+
+    fun deleteWhisperModel(modelId: String) {
+        viewModelScope.launch {
+            whisperModelStore.deleteModel(modelId).onSuccess {
+                _snackbarMessage.value = "Local Whisper model deleted"
+            }.onFailure { err ->
+                _snackbarMessage.value = err.message ?: "Unable to delete model"
+            }
+        }
+    }
+
+    fun importWhisperModel(uri: Uri) {
+        viewModelScope.launch {
+            whisperModelStore.importCustomModelFromUri(uri).onSuccess { item ->
+                haptics.confirm()
+                _snackbarMessage.value = "Imported ${item.displayName} for offline transcription"
+            }.onFailure { err ->
+                haptics.error()
+                _snackbarMessage.value = err.message ?: "Invalid Whisper GGML file"
+            }
+        }
+    }
+
+    fun dismissWhisperBanner() {
+        whisperModelStore.dismissBanner()
+    }
+
     fun selectDisplayFormat(format: CantoneseFormat) {
         _displayFormat.value = format
         viewModelScope.launch {
@@ -268,10 +317,11 @@ class StudioViewModel(
             if (started.isFailure) {
                 val msg = ProviderRequestAuth.redactSecrets(started.exceptionOrNull()?.message)
                     .ifBlank { "Unable to start live stream." }
+                val alternate = resolveAlternateEngine(prefs.routingMode)
                 _uiState.value = StudioUiState.Error(
                     message = msg,
-                    canRetryWithAlternateEngine = prefs.routingMode == RoutingMode.OPENAI_ONLY,
-                    suggestedEngine = if (prefs.routingMode == RoutingMode.OPENAI_ONLY) RoutingMode.GEMINI_ONLY else null,
+                    canRetryWithAlternateEngine = alternate != null,
+                    suggestedEngine = alternate,
                     isAppCheckOrKeyError = isKeyOrAppCheckError(msg)
                 )
                 return@launch
@@ -347,11 +397,7 @@ class StudioViewModel(
 
                     is LiveFinalizeResult.Error -> {
                         haptics.error()
-                        val alternate = when (prefs.routingMode) {
-                            RoutingMode.OPENAI_ONLY -> RoutingMode.GEMINI_ONLY
-                            RoutingMode.GEMINI_ONLY -> if (router.isOpenAiReady) RoutingMode.OPENAI_ONLY else null
-                            RoutingMode.AUTO -> RoutingMode.GEMINI_ONLY
-                        }
+                        val alternate = resolveAlternateEngine(prefs.routingMode)
                         _uiState.value = StudioUiState.Error(
                             message = result.message,
                             canRetryWithAlternateEngine = alternate != null,
@@ -544,12 +590,7 @@ class StudioViewModel(
                 haptics.error()
                 val errMsg = ProviderRequestAuth.redactSecrets(err.message)
                     .ifBlank { "Transcription failed." }
-                val openAiReady = router.isOpenAiReady
-                val alternate = when (effectiveMode) {
-                    RoutingMode.OPENAI_ONLY -> RoutingMode.GEMINI_ONLY
-                    RoutingMode.GEMINI_ONLY -> if (openAiReady) RoutingMode.OPENAI_ONLY else null
-                    RoutingMode.AUTO -> if (openAiReady) RoutingMode.GEMINI_ONLY else null
-                }
+                val alternate = resolveAlternateEngine(effectiveMode)
                 _uiState.value = StudioUiState.Error(
                     message = errMsg,
                     canRetryWithAlternateEngine = alternate != null,
@@ -570,10 +611,38 @@ class StudioViewModel(
         }
     }
 
+    private fun resolveAlternateEngine(currentMode: RoutingMode): RoutingMode? {
+        return when (currentMode) {
+            RoutingMode.OPENAI_ONLY -> when {
+                router.isGeminiReady -> RoutingMode.GEMINI_ONLY
+                router.isLocalReady -> RoutingMode.LOCAL_ONLY
+                else -> null
+            }
+            RoutingMode.GEMINI_ONLY -> when {
+                router.isOpenAiReady -> RoutingMode.OPENAI_ONLY
+                router.isLocalReady -> RoutingMode.LOCAL_ONLY
+                else -> null
+            }
+            RoutingMode.LOCAL_ONLY -> when {
+                router.isGeminiReady -> RoutingMode.GEMINI_ONLY
+                router.isOpenAiReady -> RoutingMode.OPENAI_ONLY
+                else -> null
+            }
+            RoutingMode.AUTO -> when {
+                router.isLocalReady -> RoutingMode.LOCAL_ONLY
+                router.isGeminiReady -> RoutingMode.GEMINI_ONLY
+                router.isOpenAiReady -> RoutingMode.OPENAI_ONLY
+                else -> null
+            }
+        }
+    }
+
     private fun isKeyOrAppCheckError(message: String): Boolean {
         return message.contains("App Check", ignoreCase = true) ||
             message.contains("token is invalid", ignoreCase = true) ||
             message.contains("API key", ignoreCase = true) ||
+            message.contains("Whisper model", ignoreCase = true) ||
+            message.contains("local model", ignoreCase = true) ||
             message.contains("401") ||
             message.contains("403")
     }

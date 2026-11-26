@@ -18,7 +18,8 @@ enum class CantoneseFormat(val label: String) {
 enum class RoutingMode(val label: String) {
     AUTO("Auto"),
     GEMINI_ONLY("Gemini"),
-    OPENAI_ONLY("OpenAI")
+    OPENAI_ONLY("OpenAI"),
+    LOCAL_ONLY("Local")
 }
 
 enum class ThemePreference(val label: String) {
@@ -35,7 +36,12 @@ enum class TranscriptionEngineId(val displayName: String, val modelTag: String) 
     GEMINI_DIRECT_FLASH("Gemini 4 Hydrogen", "gemini-4-hydrogen"),
     GEMINI_DIRECT_LITE("Gemini 3.8 Flash", "gemini-3.8-flash"),
     OPENAI_GPT_TRANSCRIBE("OpenAI Transcribe", "gpt-transcribe"),
-    OPENAI_MINI_FALLBACK("OpenAI Mini", "gpt-4o-mini-transcribe")
+    OPENAI_MINI_FALLBACK("OpenAI Mini", "gpt-4o-mini-transcribe"),
+    WHISPER_LOCAL_TINY("Whisper Local (Tiny)", "ggml-tiny-q5_1"),
+    WHISPER_LOCAL_BASE("Whisper Local (Base)", "ggml-base-q5_1"),
+    WHISPER_LOCAL_SMALL("Whisper Local (Small)", "ggml-small-q5_1"),
+    WHISPER_LOCAL_TURBO("Whisper Local (Turbo)", "ggml-large-v3-turbo-q5_0"),
+    WHISPER_LOCAL_CUSTOM("Whisper Local (Custom)", "ggml-custom")
 }
 
 data class ApiKeyStatus(
@@ -133,7 +139,8 @@ data class UserPreferences(
     val autoCopyOnFinish: Boolean = true,
     val hapticsEnabled: Boolean = true,
     val customGlossary: String = "",
-    val themePreference: ThemePreference = ThemePreference.SYSTEM
+    val themePreference: ThemePreference = ThemePreference.SYSTEM,
+    val activeWhisperModelId: String? = null
 )
 
 data class AudioCaptureMetrics(

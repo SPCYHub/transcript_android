@@ -29,6 +29,7 @@
     <string name="routing_auto">Auto</string>
     <string name="routing_gemini">Gemini</string>
     <string name="routing_openai">OpenAI</string>
+    <string name="routing_local">Local</string>
 
     <!-- Keyboard -->
     <string name="keyboard_title">Live Voice Keyboard</string>

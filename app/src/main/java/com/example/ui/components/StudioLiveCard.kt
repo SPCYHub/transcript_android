@@ -50,6 +50,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.example.core.LocalStudioHaptics
@@ -104,7 +105,10 @@ fun LiveStreamingCanvasCard(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 10.dp)
                 ) {
                     Box(
                         modifier = Modifier
@@ -121,12 +125,16 @@ fun LiveStreamingCanvasCard(
                             },
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.error,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
                             text = state.engineLabel,
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -140,6 +148,8 @@ fun LiveStreamingCanvasCard(
                         style = MaterialTheme.typography.labelLarge,
                         fontFamily = MaterialTheme.typography.labelMedium.fontFamily,
                         color = MaterialTheme.colorScheme.onErrorContainer,
+                        maxLines = 1,
+                        softWrap = false,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                     )
                 }
@@ -299,7 +309,10 @@ fun ProcessingStatusCard(state: StudioUiState.Processing) {
                 strokeWidth = 3.dp,
                 color = MaterialTheme.colorScheme.primary
             )
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
                 Text(
                     text = state.stageLabel,
                     style = MaterialTheme.typography.titleSmall,
@@ -308,12 +321,16 @@ fun ProcessingStatusCard(state: StudioUiState.Processing) {
                 Text(
                     text = "${state.fileName} · ${state.codecLabel} · ${formatByteSize(state.sizeBytes)}",
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = "Engine: ${state.activeEngineHint}",
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
@@ -350,8 +367,15 @@ fun ErrorRecoveryCard(
                     contentDescription = "Transcription error",
                     tint = MaterialTheme.colorScheme.error
                 )
+                val isLocalModelMissing = state.message.contains("Whisper", ignoreCase = true) ||
+                    state.message.contains("offline model", ignoreCase = true) ||
+                    state.message.contains("local model", ignoreCase = true)
                 Text(
-                    text = if (state.isAppCheckOrKeyError) "API Key Required" else "Transcription Issue",
+                    text = when {
+                        isLocalModelMissing -> "Offline Model Required"
+                        state.isAppCheckOrKeyError -> "API Key or Model Required"
+                        else -> "Transcription Issue"
+                    },
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.onErrorContainer,
                     fontWeight = FontWeight.Bold
@@ -366,7 +390,7 @@ fun ErrorRecoveryCard(
 
             if (state.isAppCheckOrKeyError) {
                 Text(
-                    text = "Tip: Add and save your personal Gemini or OpenAI API key in the Keys tab to connect directly.",
+                    text = "Tip: Download an offline Whisper GGML model or add a Gemini / OpenAI API key in the Keys tab.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.85f)
                 )
@@ -397,7 +421,7 @@ fun ErrorRecoveryCard(
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Add Own API Key")
+                        Text("Keys & Models")
                     }
                 }
 

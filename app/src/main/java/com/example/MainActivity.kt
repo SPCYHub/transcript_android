@@ -62,6 +62,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -204,6 +205,7 @@ private fun CantoScribeRoot(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val preferences by viewModel.preferences.collectAsStateWithLifecycle()
     val apiKeyStatus by viewModel.apiKeyStatus.collectAsStateWithLifecycle()
+    val whisperManagerState by viewModel.whisperManagerState.collectAsStateWithLifecycle()
     val geminiKeyTest by viewModel.geminiKeyTest.collectAsStateWithLifecycle()
     val openAiKeyTest by viewModel.openAiKeyTest.collectAsStateWithLifecycle()
     val displayFormat by viewModel.displayFormat.collectAsStateWithLifecycle()
@@ -237,6 +239,14 @@ private fun CantoScribeRoot(
         if (uri != null) {
             currentDestination = AppDestination.STUDIO
             viewModel.handleSharedAudioUri(uri, AudioSourceType.AUDIO_IMPORT)
+        }
+    }
+
+    val whisperModelPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.importWhisperModel(uri)
         }
     }
 
@@ -348,7 +358,12 @@ private fun CantoScribeRoot(
                                     } else {
                                         dest.label
                                     }
-                                    Text(labelText)
+                                    Text(
+                                        text = labelText,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                 },
                                 modifier = Modifier.testTag("nav_${dest.route}")
                             )
@@ -411,6 +426,7 @@ private fun CantoScribeRoot(
                             preferences = preferences,
                             displayFormat = displayFormat,
                             apiKeyStatus = apiKeyStatus,
+                            whisperManagerState = whisperManagerState,
                             hasMicPermission = hasMicPermission,
                             onRequestMicPermission = {
                                 micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -470,6 +486,7 @@ private fun CantoScribeRoot(
                             geminiKeyTest = geminiKeyTest,
                             openAiKeyTest = openAiKeyTest,
                             preferences = preferences,
+                            whisperManagerState = whisperManagerState,
                             onSaveGeminiKey = viewModel::saveGeminiApiKey,
                             onClearGeminiKey = viewModel::clearGeminiApiKey,
                             onToggleUsePersonalGemini = viewModel::setUsePersonalGeminiKey,
@@ -478,6 +495,14 @@ private fun CantoScribeRoot(
                             onSaveOpenAiKey = viewModel::saveOpenAiApiKey,
                             onClearOpenAiKey = viewModel::clearOpenAiApiKey,
                             onTestOpenAiKey = viewModel::testOpenAiKey,
+                            onDownloadWhisperModel = viewModel::downloadWhisperModel,
+                            onCancelWhisperDownload = viewModel::cancelWhisperDownload,
+                            onSelectWhisperModel = viewModel::selectWhisperModel,
+                            onDeleteWhisperModel = viewModel::deleteWhisperModel,
+                            onImportWhisperModel = {
+                                whisperModelPickerLauncher.launch(arrayOf("*/*"))
+                            },
+                            onDismissWhisperBanner = viewModel::dismissWhisperBanner,
                             onSelectTheme = viewModel::setThemePreference,
                             onToggleHaptics = viewModel::setHapticsEnabled,
                             onToggleAutoCopy = viewModel::setAutoCopyOnFinish,
