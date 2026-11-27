@@ -41,7 +41,14 @@ enum class TranscriptionEngineId(val displayName: String, val modelTag: String) 
     WHISPER_LOCAL_BASE("Whisper Local (Base)", "ggml-base-q5_1"),
     WHISPER_LOCAL_SMALL("Whisper Local (Small)", "ggml-small-q5_1"),
     WHISPER_LOCAL_TURBO("Whisper Local (Turbo)", "ggml-large-v3-turbo-q5_0"),
-    WHISPER_LOCAL_CUSTOM("Whisper Local (Custom)", "ggml-custom")
+    WHISPER_LOCAL_CUSTOM("Whisper Local (Custom)", "ggml-custom");
+
+    val isLocalWhisper: Boolean
+        get() = when (this) {
+            WHISPER_LOCAL_TINY, WHISPER_LOCAL_BASE, WHISPER_LOCAL_SMALL,
+            WHISPER_LOCAL_TURBO, WHISPER_LOCAL_CUSTOM -> true
+            else -> false
+        }
 }
 
 data class ApiKeyStatus(

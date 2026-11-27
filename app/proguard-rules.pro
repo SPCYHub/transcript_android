@@ -23,4 +23,3 @@
 -keep class com.example.ai.WhisperNativeBridge {
     native <methods>;
 }
-

@@ -47,6 +47,12 @@ private enum class LivePipelineMode {
     LOCAL_WHISPER_VAD
 }
 
+/** Preserves the source clock when a buffered recording crosses a pipeline boundary. */
+internal data class BufferedPcm16(val bytes: ByteArray, val sampleRateHz: Int) {
+    fun hasDurationAtLeast(millis: Int): Boolean =
+        bytes.size / 2 * 1_000L >= sampleRateHz * millis.toLong()
+}
+
 sealed interface LiveFinalizeResult {
     data class Success(val record: TranscriptRecord) : LiveFinalizeResult
     data class Error(val message: String) : LiveFinalizeResult
@@ -109,7 +115,8 @@ class LiveTranscriptionController(
         private const val CHUNK_MAX_WINDOW_MS = 1_450L
         private const val LOCAL_VAD_PAUSE_MS = 450L
         private const val LOCAL_MAX_WINDOW_MS = 3_000L
-        private const val CHUNK_MIN_SEGMENT_BYTES = 16_000 * 2 * 250 / 1000 // 250ms at 16kHz PCM16
+        private const val CHUNK_MIN_SEGMENT_MS = 250
+        private const val CHUNK_MIN_SEGMENT_BYTES = 16_000 * 2 * CHUNK_MIN_SEGMENT_MS / 1000
         private const val PRE_ROLL_MAX_FRAMES = 3 // ~300ms pre-roll so opening syllables aren't clipped
         private const val STREAM_CHUNK_TIMEOUT_MS = 30_000L
 
@@ -454,16 +461,11 @@ class LiveTranscriptionController(
                 }
 
                 override fun onError(message: String) {
-                    if (!_state.value.isActive || isFinalizing) return
+                    if (!_state.value.isActive || isFinalizing || pipelineMode != LivePipelineMode.OPENAI_REALTIME) return
                     val existingConfirmed = _state.value.combinedText
-                    val bufferedPcm = drainFallbackPcm()
+                    val bufferedPcm = BufferedPcm16(drainFallbackPcm(), activeSampleRateHz)
 
-                    if (preferences.routingMode == RoutingMode.AUTO && keyStore.hasDirectGeminiKey()) {
-                        Log.w(TAG, "OpenAI Realtime error (${ProviderRequestAuth.redactSecrets(message)}); failing over live to Gemini Direct Live")
-                        openAiRealtime.disconnect()
-                        pcmRecorder.stop()
-                        startGeminiLiveApiSession(scope, preferences, carryOverText = existingConfirmed)
-                    } else if (preferences.routingMode == RoutingMode.AUTO &&
+                    if (preferences.routingMode == RoutingMode.AUTO &&
                         !isAuthError(message) &&
                         localWhisperEngine.isConfigured &&
                         isConnectivityMessage(message)
@@ -476,8 +478,13 @@ class LiveTranscriptionController(
                             preferences = preferences,
                             carryOverText = existingConfirmed,
                             isAutoOfflineFallback = true,
-                            initialBufferedPcm = bufferedPcm.takeIf { it.size >= CHUNK_MIN_SEGMENT_BYTES }
+                            initialBufferedPcm = bufferedPcm
                         )
+                    } else if (preferences.routingMode == RoutingMode.AUTO && keyStore.hasDirectGeminiKey()) {
+                        Log.w(TAG, "OpenAI Realtime error (${ProviderRequestAuth.redactSecrets(message)}); failing over live to Gemini Direct Live")
+                        openAiRealtime.disconnect()
+                        pcmRecorder.stop()
+                        startGeminiLiveApiSession(scope, preferences, carryOverText = existingConfirmed)
                     } else if (!isAuthError(message)) {
                         Log.w(TAG, "OpenAI Realtime unavailable (${ProviderRequestAuth.redactSecrets(message)}); switching live to OpenAI Chunked REST")
                         openAiRealtime.disconnect()
@@ -785,7 +792,7 @@ class LiveTranscriptionController(
                             preferences = preferences,
                             carryOverText = existingText,
                             isAutoOfflineFallback = true,
-                            initialBufferedPcm = bufferedPcm.takeIf { it.size >= CHUNK_MIN_SEGMENT_BYTES }
+                            initialBufferedPcm = BufferedPcm16(bufferedPcm, LivePcmStreamRecorder.SAMPLE_RATE_GEMINI_HZ)
                         )
                         return
                     }
@@ -885,10 +892,11 @@ class LiveTranscriptionController(
         preferences: UserPreferences,
         carryOverText: String = "",
         isAutoOfflineFallback: Boolean = false,
-        initialBufferedPcm: ByteArray? = null
+        initialBufferedPcm: BufferedPcm16? = null
     ): Result<Unit> {
+        val captureRateHz = LivePcmStreamRecorder.SAMPLE_RATE_GEMINI_HZ
         pipelineMode = LivePipelineMode.LOCAL_WHISPER_VAD
-        activeSampleRateHz = LivePcmStreamRecorder.SAMPLE_RATE_GEMINI_HZ
+        activeSampleRateHz = captureRateHz
         clearBuffers()
 
         val modelShort = localWhisperEngine.activeModelShortName ?: "GGML"
@@ -909,14 +917,15 @@ class LiveTranscriptionController(
 
         val queue = Channel<ByteArray>(capacity = Channel.UNLIMITED)
         segmentQueue = queue
-        if (initialBufferedPcm != null && initialBufferedPcm.isNotEmpty()) {
-            queue.trySend(initialBufferedPcm)
-        }
 
         chunkConsumerJob?.cancel()
         chunkConsumerJob = scope.launch(Dispatchers.IO) {
+            // Process the handoff at its original rate before any newly captured 16 kHz chunks.
+            initialBufferedPcm?.takeIf { it.hasDurationAtLeast(CHUNK_MIN_SEGMENT_MS) }?.let {
+                transcribeLocalWhisperSegment(it, preferences)
+            }
             for (pcmSegment in queue) {
-                transcribeLocalWhisperSegment(pcmSegment, preferences)
+                transcribeLocalWhisperSegment(BufferedPcm16(pcmSegment, captureRateHz), preferences)
             }
         }
 
@@ -924,7 +933,7 @@ class LiveTranscriptionController(
 
         return pcmRecorder.start(
             scope = scope,
-            sampleRateHz = LivePcmStreamRecorder.SAMPLE_RATE_GEMINI_HZ,
+            sampleRateHz = captureRateHz,
             onChunk = { chunk ->
                 handleChunkedPcm(chunk, queue)
             },
@@ -935,7 +944,7 @@ class LiveTranscriptionController(
     }
 
     private suspend fun transcribeLocalWhisperSegment(
-        pcmBytes: ByteArray,
+        pcm: BufferedPcm16,
         preferences: UserPreferences
     ) {
         val startedAt = System.currentTimeMillis()
@@ -947,8 +956,8 @@ class LiveTranscriptionController(
         _state.update { it.copy(isTranscribingChunk = true) }
 
         val res = localWhisperEngine.transcribePcm16(
-            pcmBytes = pcmBytes,
-            sampleRateHz = LivePcmStreamRecorder.SAMPLE_RATE_GEMINI_HZ,
+            pcmBytes = pcm.bytes,
+            sampleRateHz = pcm.sampleRateHz,
             customGlossary = preferences.customGlossary,
             contextTail = contextTail,
             singleSegment = true

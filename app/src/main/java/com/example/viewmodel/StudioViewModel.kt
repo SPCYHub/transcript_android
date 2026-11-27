@@ -391,7 +391,7 @@ class StudioViewModel(
                         if (_displayFormat.value != CantoneseFormat.SPOKEN_CANTONESE &&
                             record.writtenChinese.isNullOrBlank()
                         ) {
-                            convertCurrentRecordToWritten(record)
+                            convertCurrentRecordToWritten(record, automatic = true)
                         }
                     }
 
@@ -534,17 +534,23 @@ class StudioViewModel(
         }
     }
 
-    private fun convertCurrentRecordToWritten(record: TranscriptRecord) {
+    private fun convertCurrentRecordToWritten(record: TranscriptRecord, automatic: Boolean = false) {
+        // An automatic post-processing step must never upload a local result, even after AUTO failover.
+        if (automatic && record.engineUsed.isLocalWhisper) return
         viewModelScope.launch {
-            val current = _uiState.value as? StudioUiState.Success ?: return@launch
-            _uiState.value = current.copy(isConvertingWritten = true)
             val routingMode = preferencesRepo.currentPreferences().routingMode
+            if (automatic && routingMode == RoutingMode.LOCAL_ONLY) return@launch
+            val current = (_uiState.value as? StudioUiState.Success)
+                ?.takeIf { it.record.id == record.id && !it.isConvertingWritten } ?: return@launch
+            _uiState.value = current.copy(isConvertingWritten = true)
 
             router.ensureWrittenChinese(record, routingMode = routingMode).onSuccess { updated ->
-                val latest = _uiState.value as? StudioUiState.Success ?: return@onSuccess
+                val latest = (_uiState.value as? StudioUiState.Success)
+                    ?.takeIf { it.record.id == record.id } ?: return@onSuccess
                 _uiState.value = latest.copy(record = updated, isConvertingWritten = false)
             }.onFailure { err ->
-                val latest = _uiState.value as? StudioUiState.Success ?: return@onFailure
+                val latest = (_uiState.value as? StudioUiState.Success)
+                    ?.takeIf { it.record.id == record.id } ?: return@onFailure
                 _uiState.value = latest.copy(isConvertingWritten = false)
                 _snackbarMessage.value = err.message ?: "Could not convert to Written Chinese"
             }
@@ -584,7 +590,7 @@ class StudioViewModel(
                 if (_displayFormat.value != CantoneseFormat.SPOKEN_CANTONESE &&
                     record.writtenChinese.isNullOrBlank()
                 ) {
-                    convertCurrentRecordToWritten(record)
+                    convertCurrentRecordToWritten(record, automatic = true)
                 }
             }.onFailure { err ->
                 haptics.error()
@@ -623,11 +629,7 @@ class StudioViewModel(
                 router.isLocalReady -> RoutingMode.LOCAL_ONLY
                 else -> null
             }
-            RoutingMode.LOCAL_ONLY -> when {
-                router.isGeminiReady -> RoutingMode.GEMINI_ONLY
-                router.isOpenAiReady -> RoutingMode.OPENAI_ONLY
-                else -> null
-            }
+            RoutingMode.LOCAL_ONLY -> null
             RoutingMode.AUTO -> when {
                 router.isLocalReady -> RoutingMode.LOCAL_ONLY
                 router.isGeminiReady -> RoutingMode.GEMINI_ONLY

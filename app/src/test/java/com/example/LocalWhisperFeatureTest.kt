@@ -2,15 +2,22 @@ package com.example
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.example.ai.BufferedPcm16
 import com.example.ai.CantonesePrompts
 import com.example.ai.TranscriptSanitizer
 import com.example.audio.AudioPcmDecoder
+import com.example.audio.LivePcmStreamRecorder
 import com.example.core.AppContainer
 import com.example.data.WhisperModelStore
 import com.example.model.AudioSourceType
+import com.example.model.PreparedAudio
 import com.example.model.RoutingMode
+import com.example.model.TranscriptRecord
+import com.example.model.TranscriptionEngineId
+import com.example.model.UserPreferences
 import com.example.model.WhisperModelCatalog
 import com.example.model.WhisperModelTier
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -18,13 +25,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
 class LocalWhisperFeatureTest {
 
     @Test
@@ -108,6 +113,94 @@ class LocalWhisperFeatureTest {
         assertEquals(160, floats!!.size)
         assertEquals(0.25f, floats[10], 0.01f)
     }
+
+    @Test
+    fun `queued 24kHz fallback keeps its duration through Whisper resampling`() {
+        val rateHz = LivePcmStreamRecorder.SAMPLE_RATE_OPENAI_REALTIME_HZ
+        val samples = ByteBuffer.allocate(rateHz / 4 * 2).order(ByteOrder.LITTLE_ENDIAN)
+        repeat(rateHz / 4) { samples.putShort(16384) }
+        val buffered = BufferedPcm16(samples.array(), rateHz)
+
+        assertTrue(buffered.hasDurationAtLeast(250))
+        assertFalse(buffered.copy(bytes = buffered.bytes.copyOf(8_000)).hasDurationAtLeast(250))
+        val decoded = AudioPcmDecoder.pcm16BytesTo16kMonoFloat(buffered.bytes, buffered.sampleRateHz)
+        assertEquals(4_000, decoded.size)
+        assertEquals(0.5f, decoded.last(), 0.001f)
+    }
+
+    @Test
+    fun `local mode rejects cloud conversion and review with both keys configured`() = runBlocking<Unit> {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        AppContainer.ensureInitialized(context)
+        val keys = AppContainer.secureKeyStore
+        val router = AppContainer.transcriptionRouter
+        keys.saveGeminiApiKey("test-gemini-whisper-key-not-real")
+        keys.saveOpenAiApiKey("sk-test-whisper-key-not-real")
+        try {
+            assertTrue(router.isGeminiReady)
+            assertTrue(router.isOpenAiReady)
+            val transcript = fixtureTranscript(TranscriptionEngineId.WHISPER_LOCAL_BASE)
+            val offlineMessage = context.getString(R.string.local_only_cloud_processing_unavailable)
+
+            val conversion = router.ensureWrittenChinese(transcript, RoutingMode.LOCAL_ONLY)
+            assertEquals(offlineMessage, conversion.exceptionOrNull()?.message)
+            val review = router.runDeepReview(transcript, null, "", RoutingMode.LOCAL_ONLY)
+            assertEquals(offlineMessage, review.exceptionOrNull()?.message)
+
+            val alreadyWritten = transcript.copy(writtenChinese = "我們開會。")
+            assertEquals(alreadyWritten, router.ensureWrittenChinese(alreadyWritten, RoutingMode.LOCAL_ONLY).getOrThrow())
+        } finally {
+            keys.clearGeminiApiKey()
+            keys.clearOpenAiApiKey()
+        }
+    }
+
+    @Test
+    fun `local mode reuses local but not cloud transcript cache entries`() = runBlocking<Unit> {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        AppContainer.ensureInitialized(context)
+        val store = AppContainer.sessionStore
+        val router = AppContainer.transcriptionRouter
+        val cloud = fixtureTranscript(TranscriptionEngineId.OPENAI_GPT_TRANSCRIBE)
+        val audio = PreparedAudio(
+            bytes = byteArrayOf(1, 2),
+            fileName = cloud.fileName,
+            geminiMimeType = "audio/wav",
+            openAiFileName = cloud.fileName,
+            openAiMimeType = "audio/wav",
+            durationMillis = cloud.durationMillis,
+            sizeBytes = cloud.audioSizeBytes,
+            sha256 = cloud.audioSha256,
+            sourceType = cloud.sourceType,
+            codecLabel = cloud.codecLabel
+        )
+        val preferences = UserPreferences(routingMode = RoutingMode.LOCAL_ONLY)
+        try {
+            store.addOrUpdate(cloud)
+            assertTrue(router.transcribe(audio, preferences).isFailure)
+            val local = cloud.copy(engineUsed = TranscriptionEngineId.WHISPER_LOCAL_BASE)
+            store.addOrUpdate(local)
+            val cached = router.transcribe(audio, preferences).getOrThrow()
+            assertTrue(cached.fromCache)
+            assertEquals(local.engineUsed, cached.engineUsed)
+        } finally {
+            store.clearAll()
+        }
+    }
+
+    private fun fixtureTranscript(engine: TranscriptionEngineId) = TranscriptRecord(
+        sourceType = AudioSourceType.AUDIO_IMPORT,
+        fileName = "fixture.wav",
+        codecLabel = "PCM WAV",
+        durationMillis = 1_000L,
+        audioSizeBytes = 2L,
+        audioSha256 = "whisper-local-cache-fixture",
+        spokenCantonese = "我哋開會。",
+        writtenChinese = null,
+        detectedLanguageMix = "Cantonese",
+        engineUsed = engine,
+        latencyMillis = 1L
+    )
 
     @Test
     fun `local whisper prompt anchors traditional cantonese and sanitizer strips primer echo`() {

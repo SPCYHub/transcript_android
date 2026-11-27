@@ -30,6 +30,7 @@
     <string name="routing_gemini">Gemini</string>
     <string name="routing_openai">OpenAI</string>
     <string name="routing_local">Local</string>
+    <string name="local_only_cloud_processing_unavailable">離線模式唔會上傳內容。要轉做書面語或者做深入分析，請先轉用網上模式。</string>
 
     <!-- Keyboard -->
     <string name="keyboard_title">Live Voice Keyboard</string>

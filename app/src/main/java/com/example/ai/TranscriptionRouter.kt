@@ -30,7 +30,8 @@ class TranscriptionRouter(
     private val geminiEngine: GeminiTranscriptionEngine,
     private val openAiEngine: OpenAiTranscriptionEngine,
     private val localWhisperEngine: LocalWhisperEngine,
-    private val sessionStore: SessionTranscriptStore
+    private val sessionStore: SessionTranscriptStore,
+    private val localOnlyCloudProcessingMessage: String
 ) {
 
     val isGeminiReady: Boolean
@@ -80,13 +81,11 @@ class TranscriptionRouter(
 
         // 1. Instant SHA-256 deduplication hit for re-shared WhatsApp clips or repeated imports.
         if (overrideMode == null) {
-            sessionStore.findCachedByHash(audio.sha256)?.let { cached ->
-                val hitRecord = cached.copy(
-                    fromCache = true,
-                    latencyMillis = 0L
-                )
-                return Result.success(hitRecord)
-            }
+            sessionStore.findCachedByHash(audio.sha256)
+                ?.takeIf { activeMode != RoutingMode.LOCAL_ONLY || it.engineUsed.isLocalWhisper }
+                ?.let { cached ->
+                    return Result.success(cached.copy(fromCache = true, latencyMillis = 0L))
+                }
         }
 
         // 2. Dispatch according to routing strategy.
@@ -107,10 +106,13 @@ class TranscriptionRouter(
 
     suspend fun ensureWrittenChinese(
         record: TranscriptRecord,
-        routingMode: RoutingMode = RoutingMode.AUTO
+        routingMode: RoutingMode
     ): Result<TranscriptRecord> {
         if (!record.writtenChinese.isNullOrBlank()) {
             return Result.success(record)
+        }
+        if (routingMode == RoutingMode.LOCAL_ONLY) {
+            return Result.failure(IllegalStateException(localOnlyCloudProcessingMessage))
         }
         if (!isGeminiReady && !isOpenAiReady) {
             return Result.failure(
@@ -144,8 +146,11 @@ class TranscriptionRouter(
         record: TranscriptRecord,
         audioContext: PreparedAudio?,
         customGlossary: String,
-        routingMode: RoutingMode = RoutingMode.AUTO
+        routingMode: RoutingMode
     ): Result<Pair<TranscriptRecord, DeepReviewResult>> {
+        if (routingMode == RoutingMode.LOCAL_ONLY) {
+            return Result.failure(IllegalStateException(localOnlyCloudProcessingMessage))
+        }
         if (!isGeminiReady && !isOpenAiReady) {
             return Result.failure(
                 IllegalStateException("Deep Review requires a Gemini or OpenAI API key in the Keys tab.")

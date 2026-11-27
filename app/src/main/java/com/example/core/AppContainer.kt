@@ -1,6 +1,7 @@
 package com.example.core
 
 import android.content.Context
+import com.example.R
 import com.example.ai.DirectGeminiRestClient
 import com.example.ai.GeminiLiveStreamEngine
 import com.example.ai.GeminiTranscriptionEngine
@@ -100,7 +101,8 @@ object AppContainer {
                 geminiEngine = geminiEngine,
                 openAiEngine = openAiEngine,
                 localWhisperEngine = localWhisperEngine,
-                sessionStore = sessionStore
+                sessionStore = sessionStore,
+                localOnlyCloudProcessingMessage = appCtx.getString(R.string.local_only_cloud_processing_unavailable)
             )
             liveTranscriptionController = LiveTranscriptionController(
                 keyStore = secureKeyStore,
